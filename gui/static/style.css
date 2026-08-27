@@ -1,0 +1,301 @@
+:root {
+  --bg: #0f1117;
+  --panel: #161923;
+  --panel-2: #1e2230;
+  --text: #eceef3;
+  --muted: #8a90a3;
+  --accent: #7c5cff;
+  --accent-2: #29d8c9;
+  --user-bubble: #2a2f42;
+  --bot-bubble: #191d2b;
+  --border: #262b3a;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: 0 0 12px var(--accent);
+}
+
+.top-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ghost-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.ghost-btn:hover { color: var(--text); border-color: var(--accent); }
+
+.body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.chat-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.avatar-panel {
+  width: 260px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 20px;
+}
+
+.avatar-wrap {
+  width: 190px;
+  height: 190px;
+}
+
+.avatar-svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.avatar-svg .halo {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  opacity: 0;
+  transform-origin: 100px 100px;
+}
+
+.avatar-svg .face { fill: #f0c9a8; }
+.avatar-svg .ear { fill: #f0c9a8; }
+.avatar-svg .hair-back,
+.avatar-svg .hair-front { fill: #3a2a4d; }
+.avatar-svg .eye { fill: #241b33; transform-origin: center; transition: transform 0.1s ease; }
+.avatar-svg .brow {
+  fill: none;
+  stroke: #3a2a4d;
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.avatar-svg .mouth { fill: #b23a56; transition: ry 0.05s linear; }
+
+@keyframes blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.1); }
+}
+.avatar-svg .eyes { animation: blink 4.5s infinite; transform-origin: 100px 100px; }
+
+.avatar-wrap.listening .halo {
+  opacity: 1;
+  animation: pulse-ring 1.4s ease-out infinite;
+}
+@keyframes pulse-ring {
+  0% { r: 90; opacity: 0.7; }
+  100% { r: 98; opacity: 0; }
+}
+
+.avatar-wrap.speaking .halo {
+  opacity: 0.6;
+  stroke: var(--accent-2);
+}
+
+.avatar-wrap.thinking .eyes {
+  animation: none;
+}
+
+.state-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.mic-btn {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+}
+.mic-btn:hover { border-color: var(--accent); }
+.mic-btn.recording {
+  background: linear-gradient(135deg, #ff5c7a, #ff2d55);
+  border-color: transparent;
+  color: white;
+  animation: mic-pulse 1s ease-in-out infinite;
+}
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,45,85,0.5); }
+  50% { box-shadow: 0 0 0 8px rgba(255,45,85,0); }
+}
+
+.wake-btn.active {
+  background: linear-gradient(135deg, var(--accent-2), #1ba89c);
+  border-color: transparent;
+  color: #06201d;
+}
+
+.wake-hint {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.4;
+}
+
+.proposals-panel {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 14px 20px;
+}
+.proposals-panel.hidden { display: none; }
+
+.proposals-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.proposal-item {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.proposal-item .req { font-weight: 600; margin-bottom: 4px; }
+.proposal-item .desc { color: var(--muted); margin-bottom: 4px; }
+.proposal-item .status.pass { color: var(--accent-2); }
+.proposal-item .status.fail { color: #ff5c7a; }
+.proposal-item .folder { font-size: 11px; color: var(--muted); margin-top: 4px; word-break: break-all; }
+
+.chat {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.msg {
+  max-width: 70%;
+  padding: 12px 16px;
+  border-radius: 14px;
+  line-height: 1.45;
+  font-size: 14.5px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.msg.user {
+  align-self: flex-end;
+  background: var(--user-bubble);
+  border-bottom-right-radius: 4px;
+}
+
+.msg.bot {
+  align-self: flex-start;
+  background: var(--bot-bubble);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+
+.msg .tag {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--accent-2);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.msg.thinking { color: var(--muted); font-style: italic; }
+
+.composer {
+  display: flex;
+  gap: 10px;
+  padding: 16px 20px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+
+.composer input {
+  flex: 1;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+  outline: none;
+}
+.composer input:focus { border-color: var(--accent); }
+
+.composer button {
+  background: linear-gradient(135deg, var(--accent), #6a4bff);
+  color: white;
+  border: none;
+  padding: 0 20px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+}
+.composer button:hover { opacity: 0.9; }
+.composer button:disabled { opacity: 0.5; cursor: not-allowed; }

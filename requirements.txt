@@ -1,0 +1,15 @@
+fastapi==0.115.6
+uvicorn==0.34.0
+pywebview==5.3.2
+requests==2.32.3
+playwright==1.49.1
+edge-tts==6.1.19
+playsound==1.2.2
+numpy==2.2.1
+beautifulsoup4==4.12.3
+lxml==5.3.0
+truststore==0.10.1
+pip-system-certs==4.0
+sounddevice==0.5.1
+faster-whisper==1.1.0
+psutil==6.1.1

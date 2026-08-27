@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Estado generado en tiempo de ejecucion, no es codigo fuente
+workspace/*
+!workspace/.gitkeep
+memory_store/*.json
+sandbox/pending_review/*
+!sandbox/pending_review/.gitkeep
+
+# Config local opcional (puede tener valores especificos de la maquina)
+config.json

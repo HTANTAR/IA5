@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>IA Local</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="dot"></div>
+        <span>IA Local</span>
+      </div>
+      <div class="top-actions">
+        <button id="voiceBtn" class="ghost-btn">🔊 Voz: activada</button>
+        <button id="proposalsBtn" class="ghost-btn">📋 Propuestas de agentes</button>
+        <button id="resetBtn" class="ghost-btn">Nueva conversación</button>
+      </div>
+    </header>
+
+    <div id="proposalsPanel" class="proposals-panel hidden">
+      <div class="proposals-header">
+        <span>Propuestas de agentes (sandbox, sin activar)</span>
+        <button id="closeProposalsBtn" class="ghost-btn">Cerrar</button>
+      </div>
+      <div id="proposalsList" class="proposals-list"></div>
+    </div>
+
+    <div class="body">
+      <aside class="avatar-panel">
+        <div id="avatarWrap" class="avatar-wrap">
+          <svg id="avatarSvg" viewBox="0 0 200 200" class="avatar-svg">
+            <circle class="halo" cx="100" cy="100" r="94"></circle>
+            <path class="hair-back" d="M45 95 Q40 40 100 32 Q160 40 155 95 L155 150 Q150 120 130 118 Q100 128 70 118 Q50 120 45 150 Z"></path>
+            <ellipse class="face" cx="100" cy="108" rx="52" ry="60"></ellipse>
+            <ellipse class="ear ear-left" cx="49" cy="112" rx="7" ry="11"></ellipse>
+            <ellipse class="ear ear-right" cx="151" cy="112" rx="7" ry="11"></ellipse>
+            <path class="hair-front" d="M46 88 Q42 36 100 28 Q158 36 154 88 Q150 55 100 50 Q50 55 46 88 Z"></path>
+            <g class="eyes">
+              <ellipse class="eye eye-left" cx="78" cy="100" rx="7" ry="9"></ellipse>
+              <ellipse class="eye eye-right" cx="122" cy="100" rx="7" ry="9"></ellipse>
+            </g>
+            <path class="brow brow-left" d="M68 84 Q78 79 89 84"></path>
+            <path class="brow brow-right" d="M111 84 Q122 79 132 84"></path>
+            <ellipse id="mouth" class="mouth" cx="100" cy="138" rx="17" ry="2.5"></ellipse>
+          </svg>
+        </div>
+        <div id="stateLabel" class="state-label">en línea</div>
+        <button id="micBtn" class="mic-btn">🎤 Hablar</button>
+        <button id="wakeBtn" class="mic-btn wake-btn">👂 Escucha permanente</button>
+        <div class="wake-hint">Decí "<strong>Esclava</strong>" seguido de tu pedido</div>
+      </aside>
+
+      <div class="chat-col">
+        <main id="chat" class="chat"></main>
+
+        <form id="form" class="composer">
+          <input id="input" type="text" placeholder="Escribí tu mensaje..." autocomplete="off" />
+          <button type="submit">Enviar</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
