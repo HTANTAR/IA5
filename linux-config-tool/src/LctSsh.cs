@@ -109,8 +109,8 @@ namespace Lct
                     }
 
                     string runPart = asRoot
-                        ? "if [ \"$(id -u)\" = 0 ]; then bash job.sh; rc=$?; else sudo -S -p \"\" bash job.sh <&3; rc=$?; fi"
-                        : "bash job.sh; rc=$?";
+                        ? "if [ \"$(id -u)\" = 0 ]; then bash job.sh </dev/null; rc=$?; else sudo -S -p \"\" bash job.sh <&3; rc=$?; fi"
+                        : "bash job.sh </dev/null; rc=$?";
                     string payload = "exec 2>&1; D=" + dir + "; cd \"$D\" || exit 97; exec 3<pw; rm -f pw; "
                         + runPart + "; exec 3<&-; cd /; rm -rf \"$D\"; exit $rc";
                     string cmd = "/bin/sh -c '" + payload.Replace("'", "'\\''") + "'";

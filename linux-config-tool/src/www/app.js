@@ -69,12 +69,12 @@ const LCT = (() => {
 
   // Lineas KEY=VALUE de cualquier script + avisos
   function parseKV(text) {
-    const kv = { warns: [], notes: [] };
+    const kv = { warns: [], notes: [], details: [] };
     String(text || '').split(/\r?\n/).forEach((line) => {
       const i = line.indexOf('=');
       if (i > 0 && /^[A-Z_]+$/.test(line.slice(0, i))) {
         const k = line.slice(0, i), v = line.slice(i + 1);
-        if (k === 'LCT_WARN') kv.warns.push(v); else if (k === 'LCT_NOTE') kv.notes.push(v); else kv[k] = v;
+        if (k === 'LCT_WARN') kv.warns.push(v); else if (k === 'LCT_NOTE') kv.notes.push(v); else if (k === 'LCT_DETAIL') kv.details.push(v); else kv[k] = v;
       }
     });
     return kv;
@@ -246,8 +246,9 @@ const LCT = (() => {
       L.push('realm permit -g ' + shq(g));
       if (p.access === 'sudo' || p.access === 'sudo-nopasswd') {
         const f = '/etc/sudoers.d/' + fileSafe(g);
+        L.push('# sudo compara el nombre exacto: SSSD devuelve los grupos de AD en minusculas (usar el nombre que muestra getent).');
         L.push("cat > " + f + " <<'EOF'");
-        L.push('%' + sudoEsc(g) + ' ALL=(ALL) ' + (p.access === 'sudo-nopasswd' ? 'NOPASSWD: ALL' : 'ALL'));
+        L.push('%' + sudoEsc(g.toLowerCase()) + ' ALL=(ALL) ' + (p.access === 'sudo-nopasswd' ? 'NOPASSWD: ALL' : 'ALL'));
         L.push('EOF');
         L.push('chmod 440 ' + f);
         L.push('visudo -cf ' + f + '        # tiene que decir "parsed OK"');
@@ -270,7 +271,15 @@ const LCT = (() => {
     const d = distro(dk), dom = p.domain || 'empresa.local', user = p.user || 'usuario.admin';
     const L = ['# ===== Unir al dominio ' + dom + ' =====', '# ' + d.n, '# Ejecutar como root (sudo -i). Los DNS deben apuntar a los DC y la hora debe estar sincronizada.', ''];
     L.push('# 1) Paquetes');
-    if (d.pkg === 'dnf' || d.pkg === 'yum') L.push(d.pkg + ' -y install realmd sssd sssd-tools oddjob oddjob-mkhomedir adcli samba-common-tools krb5-workstation');
+    if (d.pkg === 'dnf' || d.pkg === 'yum') {
+      L.push(d.pkg + ' -y install realmd sssd sssd-tools oddjob oddjob-mkhomedir adcli samba-common-tools krb5-workstation');
+      L.push('# Si falla por falta de repositorios (servidor sin registrar / sin internet): conectar el ISO/DVD COMPLETO');
+      L.push('# de instalacion a la VM y usarlo como repositorio:');
+      L.push('#   mkdir -p /mnt/iso && mount -o ro /dev/sr0 /mnt/iso');
+      L.push('#   printf "[iso-baseos]\\nbaseurl=file:///mnt/iso/BaseOS\\ngpgcheck=0\\n[iso-appstream]\\nbaseurl=file:///mnt/iso/AppStream\\ngpgcheck=0\\n" > /etc/yum.repos.d/iso.repo');
+      L.push('#   ' + d.pkg + " -y --disablerepo='*' --enablerepo='iso-*' install realmd sssd oddjob oddjob-mkhomedir adcli samba-common-tools");
+      L.push('#   rm /etc/yum.repos.d/iso.repo; umount /mnt/iso');
+    }
     else if (d.pkg === 'apt') { L.push('apt-get update'); L.push('DEBIAN_FRONTEND=noninteractive apt-get install -y realmd sssd sssd-tools libnss-sss libpam-sss adcli samba-common-bin oddjob oddjob-mkhomedir packagekit krb5-user'); }
     else if (d.pkg === 'zypper') L.push('zypper -n install realmd sssd sssd-ad sssd-tools adcli samba-client krb5-client oddjob oddjob-mkhomedir');
     else { L.push('# RHEL/Rocky/Alma: dnf -y install realmd sssd oddjob oddjob-mkhomedir adcli samba-common-tools krb5-workstation'); L.push('# Ubuntu/Debian:   apt-get install -y realmd sssd sssd-tools libnss-sss libpam-sss adcli samba-common-bin oddjob oddjob-mkhomedir packagekit'); L.push('# SUSE:            zypper -n install realmd sssd sssd-ad adcli samba-client krb5-client'); }
@@ -286,11 +295,25 @@ const LCT = (() => {
     if (d.pkg === 'apt') L.push('pam-auth-update --enable mkhomedir');
     else if (d.pkg === 'dnf' || d.pkg === 'yum') { L.push('authselect enable-feature with-mkhomedir 2>/dev/null || authconfig --enablemkhomedir --update'); L.push('systemctl enable --now oddjobd'); }
     else L.push('pam-config -a --mkhomedir 2>/dev/null || pam-auth-update --enable mkhomedir');
-    if (p.idmap) { L.push(''); L.push('# 5) Usar los UID/GID de AD (uidNumber/gidNumber)'); L.push(idmapCommands(true)); }
+    let n = 5;
+    if (p.shortnames) {
+      L.push(''); L.push('# ' + (n++) + ') Login con nombre corto (usuario en vez de usuario@' + dom + ')');
+      L.push("sed -i -E 's/^[[:space:]]*use_fully_qualified_names[[:space:]]*=.*/use_fully_qualified_names = False/; s|^[[:space:]]*fallback_homedir[[:space:]]*=.*|fallback_homedir = /home/%u|' /etc/sssd/sssd.conf");
+    }
+    if (p.idmap) { L.push(''); L.push('# ' + (n++) + ') Usar los UID/GID de AD (uidNumber/gidNumber)'); L.push(idmapCommands(true)); }
+    else if (p.shortnames) L.push('systemctl stop sssd; rm -f /var/lib/sss/db/*.ldb /var/lib/sss/mc/*; systemctl start sssd');
     L.push('');
-    L.push('# ' + (p.idmap ? '6' : '5') + ') Nadie del dominio entra hasta que habilites grupos (pestaña "Acceso por grupos AD")');
+    L.push('# ' + n + ') Nadie del dominio entra hasta que habilites grupos');
     L.push('realm deny --all');
+    if (p.groups && p.groups.length) {
+      p.groups.forEach((g) => L.push('realm permit -g ' + shq(p.shortnames ? g : fqGroup(g, dom))));
+      if (p.access === 'sudo' || p.access === 'sudo-nopasswd') {
+        p.groups.forEach((g0) => { const g = (p.shortnames ? g0 : fqGroup(g0, dom)).toLowerCase(); const f = '/etc/sudoers.d/' + fileSafe(g);
+          L.push("echo '%" + sudoEsc(g).replace(/'/g, "'\\''") + ' ALL=(ALL) ' + (p.access === 'sudo-nopasswd' ? 'NOPASSWD: ALL' : 'ALL') + "' > " + f + ' && chmod 440 ' + f + ' && visudo -cf ' + f); });
+      }
+    } else L.push('# realm permit -g <grupo>      (o usá la pestaña "Acceso por grupos AD")');
     L.push('realm list');
+    L.push('# Probar: id <usuario>   y   getent group <grupo>');
     return L.join('\n');
   }
 
@@ -461,7 +484,7 @@ if (typeof window !== 'undefined') (function () {
     state.passwords[serverKey(conn())] = conn().password;
     chip(limited ? 'Conectado (sin sudo)' : 'Conectado', limited ? 'warn' : 'ok');
     renderDetect(); renderAdStatus(); fillIfaces();
-    $('adDomain').value = $('adDomain').value || state.det.REALM_DOMAIN || '';
+    $('adDomain').value = $('adDomain').value || state.det.REALM_DOMAIN || state.det.AD_DOMAIN || '';
     $('jDomain').value = $('jDomain').value || state.det.REALM_DOMAIN || (state.det.SEARCH || '').split(' ')[0] || '';
     $('conDistro').value = LCT.distroFromDetect(state.det, ipIface());
     renderConsole();
@@ -475,7 +498,7 @@ if (typeof window !== 'undefined') (function () {
     const beName = { nm: 'NetworkManager', netplan: 'netplan', ifupdown: 'ifupdown', ifcfg: 'network-scripts (ifcfg)', wicked: 'wicked', unknown: 'desconocido' };
     const facts = [
       ['Sistema', d.OS_NAME], ['Hostname', d.FQDN || d.HOSTNAME], ['Gestor de red', beName[gwIf.backend] || gwIf.backend || '-'],
-      ['Gateway', d.GW || '-'], ['DNS', d.DNS || '-'], ['Active Directory', d.REALM_JOINED === 'yes' ? 'Unido a ' + d.REALM_DOMAIN : 'No unido'],
+      ['Gateway', d.GW || '-'], ['DNS', d.DNS || '-'], ['Active Directory', adJoined(d) ? 'Unido a ' + adDomainOf(d) : (d.AD_METHOD === 'centrify' || d.AD_METHOD === 'winbind') ? d.AD_METHOD + ': ' + d.AD_DOMAIN : 'No unido'],
     ];
     let html = (d.limited ? '<div class="msg warn">' + esc(d.limited) + ' Solo se muestra información básica.</div>' : '') +
       '<div class="facts">' + facts.map((f) => '<div class="fact"><small>' + f[0] + '</small><b>' + esc(f[1]) + '</b></div>').join('') + '</div>';
@@ -617,15 +640,28 @@ if (typeof window !== 'undefined') (function () {
   function adAccess() { const r = document.querySelector('input[name="adAccess"]:checked'); return r ? r.value : 'login'; }
   function adBaseVars() { return { LCT_DOMAIN: $('adDomain').value.trim(), LCT_EXPECTED_GID: $('adGid').value.trim(), LCT_ACCESS: adAccess() }; }
 
+  function adJoined(d) { d = d || state.det; return !!d && (d.REALM_JOINED === 'yes' || d.AD_METHOD === 'realm' || d.AD_METHOD === 'sssd'); }
+  function adDomainOf(d) { return d.REALM_DOMAIN || d.AD_DOMAIN || ''; }
+
   function renderAdStatus() {
     const d = state.det, el = $('adStatus');
     if (!d) return;
-    if (d.REALM_JOINED !== 'yes') {
-      el.innerHTML = '<div class="msg warn">Este servidor <b>no está unido</b> a un dominio' + (d.HAS_SSSD === 'yes' ? ' con realmd' : '') + '. Usá "Unir el servidor al dominio" más abajo.</div>';
+    if (d.AD_METHOD === 'centrify' || d.AD_METHOD === 'winbind') {
+      el.innerHTML = '<div class="msg warn">Este servidor ya está integrado a <b>' + esc(d.AD_DOMAIN) + '</b> con <b>' + (d.AD_METHOD === 'centrify' ? 'Centrify / Delinea' : 'Samba winbind') +
+        '</b>. Esta herramienta gestiona el acceso con realmd/SSSD; con ' + (d.AD_METHOD === 'centrify' ? 'Centrify el acceso se da desde las zonas en AD' : 'winbind se usa require_membership_of en pam_winbind') + '. No lo unas de nuevo.</div>';
+      $('joinBox').open = false;
+      return;
+    }
+    if (!adJoined(d)) {
+      const miss = d.AD_PKGS_MISSING;
+      el.innerHTML = '<div class="msg warn"><b>Este servidor no está unido al dominio</b>, por eso Linux todavía no conoce a los usuarios ni grupos de AD. ' +
+        'Para que los usuarios del grupo puedan entrar hay que unirlo una vez (abajo). Unirlo <b>no</b> le da acceso a nadie: después se habilitan solo los grupos que indiques.</div>' +
+        '<div class="msg ' + (miss ? 'info' : 'ok') + '">' + (miss ? 'Paquetes que faltan en el servidor: <b>' + esc(miss) + '</b>. Se instalan al unir (de los repositorios, o del ISO/DVD de instalación si la VM lo tiene conectado).' : 'Los paquetes necesarios (realmd, sssd, adcli) ya están instalados.') + '</div>';
       $('joinBox').open = true;
       return;
     }
     $('joinBox').open = false;
+    if (!d.REALM_DOMAIN) d.REALM_DOMAIN = d.AD_DOMAIN;
     const policy = { 'allow-realm-logins': 'Todos los usuarios del dominio pueden entrar', 'allow-any-login': 'Cualquier usuario puede entrar', 'allow-permitted-logins': 'Solo usuarios/grupos permitidos', 'deny-any-login': 'Nadie del dominio puede entrar' };
     const idmapAuto = (d.SSSD_IDMAP || 'true') !== 'false';
     el.innerHTML =
@@ -659,23 +695,38 @@ if (typeof window !== 'undefined') (function () {
       msgs([].concat(...rows.map((x) => (x.res.kv.warns || []).map((w) => ({ level: 'warn', text: w })))));
   }
 
-  async function adAdd() {
-    const groups = adGroups(); if (!groups.length) { toast('Escribí el nombre del grupo.'); return; }
-    const acc = adAccess(), accTxt = { login: 'Solo iniciar sesión', sudo: 'Administrador (sudo)', 'sudo-nopasswd': 'Administrador sin contraseña (sudo NOPASSWD)' }[acc];
-    const d = state.det;
-    let warn = '';
-    if (d && (d.REALM_POLICY === 'allow-realm-logins' || d.REALM_POLICY === 'allow-any-login')) warn = '<div class="msg warn">Hoy <b>todos</b> los usuarios del dominio pueden entrar a este servidor. Al agregar grupos, solo entrarán los grupos permitidos.</div>';
-    if (d && d.REALM_JOINED !== 'yes') warn += '<div class="msg err">El servidor no aparece unido a un dominio. Unilo primero.</div>';
-    const ok = await confirmBox('Dar acceso', '<p>Grupos: <b>' + esc(groups.join(', ')) + '</b><br>Nivel: <b>' + esc(accTxt) + '</b></p>' + warn, 'Dar acceso');
-    if (!ok) return;
-    const out = [];
+  const ACC_TXT = { login: 'Solo iniciar sesión', sudo: 'Administrador (sudo)', 'sudo-nopasswd': 'Administrador sin contraseña (sudo NOPASSWD)' };
+  function details(list) { return list && list.length ? '<pre class="out">' + esc(list.join('\n')) + '</pre>' : ''; }
+
+  async function grantGroups(groups) {
+    const acc = adAccess(), out = [], det = [];
     for (const g of groups) {
       const res = await runRemote('Dar acceso a ' + g + ' (' + acc + ')', 'ad', Object.assign(adBaseVars(), { LCT_ACTION: 'add', LCT_GROUP: g }), { timeout: 120 });
-      out.push(res.ok ? { level: 'ok', text: g + ': acceso otorgado (' + accTxt + ') — en Linux: ' + res.kv.GROUP_NAME + ', GID ' + res.kv.GROUP_GID } : { level: 'err', text: g + ': ' + res.error });
+      out.push(res.ok ? { level: 'ok', text: g + ': acceso otorgado (' + ACC_TXT[acc] + ') — en Linux: ' + res.kv.GROUP_NAME + ', GID ' + res.kv.GROUP_GID } : { level: 'err', text: g + ': ' + res.error });
       (res.kv.warns || []).forEach((w) => out.push({ level: 'warn', text: w }));
       (res.kv.notes || []).forEach((w) => out.push({ level: 'info', text: w }));
+      (res.kv.details || []).forEach((x) => det.push(x));
     }
-    $('adResult').innerHTML = msgs(out);
+    return { out, det };
+  }
+
+  async function adAdd() {
+    const groups = adGroups(); if (!groups.length) { toast('Escribí el nombre del grupo.'); return; }
+    const d = state.det;
+    if (d && !adJoined(d)) {
+      $('joinBox').open = true;
+      if (!$('jDomain').value) $('jDomain').value = $('adDomain').value;
+      $('adResult').innerHTML = msgs([{ level: 'info', text: 'Primero hay que unir el servidor al dominio. Completá usuario y contraseña de AD en "Unir el servidor al dominio" (abajo) y apretá "Unir al dominio": al terminar se habilita automáticamente ' + groups.join(', ') + ' con el nivel elegido.' }]);
+      $(!$('jUser').value ? 'jUser' : 'jPass').focus();
+      return;
+    }
+    const acc = adAccess();
+    let warn = '';
+    if (d && (d.REALM_POLICY === 'allow-realm-logins' || d.REALM_POLICY === 'allow-any-login')) warn = '<div class="msg warn">Hoy <b>todos</b> los usuarios del dominio pueden entrar a este servidor. Al agregar grupos, solo entrarán los grupos permitidos.</div>';
+    const ok = await confirmBox('Dar acceso', '<p>Grupos: <b>' + esc(groups.join(', ')) + '</b><br>Nivel: <b>' + esc(ACC_TXT[acc]) + '</b></p>' + warn, 'Dar acceso');
+    if (!ok) return;
+    const r = await grantGroups(groups);
+    $('adResult').innerHTML = msgs(r.out) + details(r.det);
     try { await detect(true); } catch (e) { /* ignore */ }
   }
 
@@ -699,17 +750,33 @@ if (typeof window !== 'undefined') (function () {
   async function adJoin() {
     const dom = $('jDomain').value.trim(), user = $('jUser').value.trim(), pass = $('jPass').value;
     if (!dom || !user || !pass) { toast('Completá dominio, usuario y contraseña de AD.'); return; }
+    const groups = adGroups(), acc = adAccess();
     const ok = await confirmBox('Unir al dominio', '<p>Servidor: <b>' + esc(conn().host) + '</b><br>Dominio: <b>' + esc(dom) + '</b><br>Usuario AD: <b>' + esc(user) + '</b>' +
-      ($('jOu').value ? '<br>OU: <b>' + esc($('jOu').value) + '</b>' : '') + '</p><p class="hint">Puede tardar unos minutos si hay que instalar paquetes.</p>', 'Unir');
+      ($('jOu').value ? '<br>OU: <b>' + esc($('jOu').value) + '</b>' : '') + '</p>' +
+      (groups.length ? '<div class="msg info">Al terminar se habilita: <b>' + esc(groups.join(', ')) + '</b> (' + esc(ACC_TXT[acc]) + ')</div>' : '<div class="msg warn">No cargaste ningún grupo arriba: después de unir nadie del dominio va a poder entrar hasta que agregues uno.</div>') +
+      '<p class="hint">Puede tardar unos minutos si hay que instalar paquetes.</p>', 'Unir');
     if (!ok) return;
-    $('adResult').innerHTML = '<div class="msg info">Uniendo al dominio... (puede tardar)</div>';
+    $('adResult').innerHTML = '<div class="msg info">Uniendo al dominio... (si hay que instalar paquetes puede tardar varios minutos)</div>';
     const b64 = btoa(unescape(encodeURIComponent(pass)));
     const res = await runRemote('Unir al dominio ' + dom, 'ad', { LCT_ACTION: 'join', LCT_DOMAIN: dom, LCT_ADUSER: user, LCT_ADPASS_B64: b64, LCT_OU: $('jOu').value.trim(),
-      LCT_INSTALL: $('jInstall').checked ? '1' : '0', LCT_IDMAP_OFF: $('jIdmap').checked ? '1' : '0' }, { timeout: 900 });
+      LCT_INSTALL: $('jInstall').checked ? '1' : '0', LCT_IDMAP_OFF: $('jIdmap').checked ? '1' : '0', LCT_SHORTNAMES: $('jShort').checked ? '1' : '0' }, { timeout: 1200 });
     $('jPass').value = '';
-    $('adResult').innerHTML = msgs([res.ok ? { level: 'ok', text: 'Servidor unido a ' + dom + '. Ahora agregá los grupos que deben tener acceso.' } : { level: 'err', text: res.error }]
-      .concat((res.kv.warns || []).map((w) => ({ level: 'warn', text: w }))));
-    if (res.ok) { $('adDomain').value = dom; try { await detect(true); } catch (e) { /* ignore */ } }
+    let html = msgs([res.ok ? { level: 'ok', text: 'Servidor unido a ' + dom + '.' } : { level: 'err', text: res.error }]
+      .concat((res.kv.warns || []).map((w) => ({ level: 'warn', text: w })), (res.kv.notes || []).map((w) => ({ level: 'info', text: w })))) + details(res.kv.details);
+    $('adResult').innerHTML = html;
+    if (!res.ok) return;
+    $('adDomain').value = dom;
+    if (groups.length) {
+      $('adResult').innerHTML = html + msgs([{ level: 'info', text: 'Habilitando ' + groups.join(', ') + '...' }]);
+      const r = await grantGroups(groups);
+      html += msgs(r.out) + details(r.det);
+      if (r.out.some((m) => m.level === 'ok')) html += msgs([{ level: 'ok', text: 'Listo: los usuarios de ' + groups.join(', ') + ' ya pueden entrar con su usuario' + ($('jShort').checked ? '' : '@' + dom) + ' y contraseña de AD.' }]);
+    } else {
+      html += msgs([{ level: 'info', text: 'Ahora escribí el grupo arriba y apretá "Dar acceso".' }]);
+    }
+    $('adResult').innerHTML = html;
+    try { await detect(true); } catch (e) { /* ignore */ }
+    $('adResult').innerHTML = html;
   }
 
   // ---------- comandos para consola ----------
@@ -731,7 +798,8 @@ if (typeof window !== 'undefined') (function () {
         code = LCT.adCommands({ groups: adGroups(), domain: $('adDomain').value.trim(), access: adAccess(), gid: $('adGid').value.trim() });
       } else if (task === 'join') {
         title = 'Unir al dominio';
-        code = LCT.joinCommands(dk, { domain: $('jDomain').value.trim(), user: $('jUser').value.trim(), ou: $('jOu').value.trim(), idmap: $('jIdmap').checked });
+        code = LCT.joinCommands(dk, { domain: $('jDomain').value.trim(), user: $('jUser').value.trim(), ou: $('jOu').value.trim(), idmap: $('jIdmap').checked,
+          shortnames: $('jShort').checked, groups: adGroups(), access: adAccess() });
       } else {
         title = 'Usar UID/GID de AD';
         code = LCT.idmapCommands(false);
@@ -812,6 +880,7 @@ if (typeof window !== 'undefined') (function () {
     $('btnJoinCommands').onclick = () => showConsole('join');
     $('adStatus').addEventListener('click', (e) => { const b = e.target.closest('[data-rm]'); if (b) withBusy(null, () => adRemove(b.dataset.rm)); });
     ['adGroup', 'adDomain', 'adGid', 'jDomain', 'jUser', 'jOu'].forEach((id) => $(id).addEventListener('input', () => { if (!$('tab-console').classList.contains('hidden')) renderConsole(); }));
+    ['jShort', 'jIdmap'].forEach((id) => $(id).addEventListener('change', () => { if (!$('tab-console').classList.contains('hidden')) renderConsole(); }));
 
     $('conDistro').onchange = renderConsole; $('conTask').onchange = renderConsole;
     $('btnCopy').onclick = copyCode; $('btnDownload').onclick = downloadCode;

@@ -76,6 +76,24 @@ if [ -r /etc/sssd/sssd.conf ]; then
 elif [ -e /etc/sssd/sssd.conf ]; then
   echo "SSSD_IDMAP=unknown"
 fi
+# Metodo de integracion con AD (realm / sssd manual / Centrify-Delinea / winbind)
+ad_method=none; ad_domain=""
+if lct_has realm && realm list --name-only 2>/dev/null | grep -q .; then
+  ad_method=realm; ad_domain=$(realm list --name-only 2>/dev/null | head -n1)
+elif [ -r /etc/sssd/sssd.conf ] && grep -qiE '^[[:space:]]*id_provider[[:space:]]*=[[:space:]]*(ad|ldap|ipa)' /etc/sssd/sssd.conf; then
+  ad_method=sssd; ad_domain=$(awk '/^[[:space:]]*\[domain\//{s=$0; sub(/.*\[domain\//,"",s); sub(/\].*/,"",s); print s; exit}' /etc/sssd/sssd.conf)
+elif lct_has adinfo && adinfo -d >/dev/null 2>&1; then
+  ad_method=centrify; ad_domain=$(adinfo -d 2>/dev/null)
+elif lct_has wbinfo && wbinfo -t >/dev/null 2>&1; then
+  ad_method=winbind; ad_domain=$(wbinfo --own-domain 2>/dev/null)
+fi
+echo "AD_METHOD=$ad_method"
+echo "AD_DOMAIN=$ad_domain"
+miss=""
+lct_has realm || miss="$miss realmd"
+{ lct_has sssd || [ -x /usr/sbin/sssd ]; } || miss="$miss sssd"
+lct_has adcli || miss="$miss adcli"
+echo "AD_PKGS_MISSING=${miss# }"
 for f in /etc/sudoers.d/*; do
   [ -f "$f" ] || continue
   grep -E '^[[:space:]]*%' "$f" 2>/dev/null | while IFS= read -r line; do echo "SUDO|$f|$line"; done

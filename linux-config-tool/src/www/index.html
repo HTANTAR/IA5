@@ -129,7 +129,9 @@
         </div>
         <label class="check"><input type="checkbox" id="jInstall" checked> Instalar los paquetes necesarios (realmd, sssd, adcli...)</label>
         <label class="check"><input type="checkbox" id="jIdmap" checked> Usar los UID/GID unix definidos en AD (recomendado si sus grupos tienen GID unix)</label>
-        <p class="hint">Después de unir, nadie del dominio puede entrar hasta que agregues grupos arriba. Los DNS del servidor deben apuntar a los controladores de dominio y la hora debe estar sincronizada.</p>
+        <label class="check"><input type="checkbox" id="jShort" checked> Login con nombre corto: <span class="mono">usuario</span> en vez de <span class="mono">usuario@dominio</span></label>
+        <p class="hint">Unir el servidor crea su cuenta de equipo en AD y le permite consultar usuarios y grupos; por sí solo <b>no da acceso a nadie</b>. Al terminar se habilitan automáticamente los grupos que cargaste arriba.
+        Requisitos: DNS del servidor apuntando a los controladores de dominio, hora sincronizada y un usuario con permiso para crear equipos en la OU. Si el servidor no tiene repositorios, conectá el ISO/DVD de instalación a la VM y se usa para instalar los paquetes.</p>
         <div class="actions">
           <button class="primary" id="btnJoin">Unir al dominio</button>
           <button id="btnJoinCommands">Ver comandos para consola</button>

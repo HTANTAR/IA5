@@ -28,7 +28,11 @@ Requisitos: Windows 10/11 o Windows Server 2016+ (usa Windows PowerShell 5.1 y .
    - *Admin sin contraseña* → `NOPASSWD: ALL`
    - *Verificar grupo* muestra cómo lo ve Linux (`getent group`) y avisa si el GID no coincide con el de AD.
    - Si el GID no coincide porque SSSD genera los IDs solo, el botón *Usar UID/GID de AD* pone `ldap_id_mapping = False`.
-   - *Unir el servidor al dominio*: instala paquetes, `realm join`, home automático y deja el login cerrado hasta que agregues grupos.
+   - *Unir el servidor al dominio* (necesario una sola vez para que Linux conozca los usuarios y grupos de AD; por sí solo no da acceso a nadie):
+     - instala solo los paquetes que falten (realmd, sssd, adcli, oddjob…). Si el servidor no tiene repositorios (RHEL sin registrar, sin internet/proxy), usa el **ISO/DVD de instalación** conectado a la VM;
+     - `realm join` en la OU indicada, home automático, UID/GID de AD y login con nombre corto (opcional);
+     - deja el login cerrado y **habilita automáticamente los grupos cargados arriba** con el nivel elegido;
+     - si algo falla muestra la causa (sin repositorios, DNS, permisos en la OU, contraseña, hora) y el detalle del servidor.
 4. **Comandos para consola**: elegí la distribución y la tarea; copiá o descargá el `.sh`. La opción *Script automático* detecta la distro sola.
 
 Los servidores se guardan (nombre, IP, usuario; **nunca la contraseña**) en `LinuxConfigTool-datos.json` junto al .exe, y queda un historial en `LinuxConfigTool-historial.log`.
