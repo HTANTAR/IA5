@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linux Config Tool</title>
+<link rel="stylesheet" href="style.css">
+<script>window.LCT_TOKEN = '__LCT_TOKEN__'; window.LCT_VERSION = '__LCT_VERSION__';</script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="14" width="18" height="6" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="7" cy="7" r="1.2" fill="currentColor"/><circle cx="7" cy="17" r="1.2" fill="currentColor"/></svg>
+    <span>Linux Config Tool</span>
+    <small id="ver"></small>
+  </div>
+  <div class="topbar-actions">
+    <button class="ghost" id="btnTheme" title="Cambiar tema">◐</button>
+    <button class="ghost" id="btnQuit">Salir</button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="side-head">
+      <h3>Servidores</h3>
+      <button class="small" id="btnNewServer">+ Nuevo</button>
+    </div>
+    <input id="serverFilter" class="filter" placeholder="Buscar...">
+    <ul id="serverList" class="server-list"></ul>
+    <p class="hint side-hint">Se guardan nombre, IP y usuario. Las contraseñas nunca se guardan.</p>
+  </aside>
+
+  <main>
+    <!-- 1. Conexion -->
+    <section class="card">
+      <div class="card-head">
+        <h2><span class="step">1</span> Servidor</h2>
+        <span id="connChip" class="chip">Sin conectar</span>
+      </div>
+      <div class="grid conn-grid">
+        <label>Nombre (opcional)<input id="cName" placeholder="ej: web-prod-01"></label>
+        <label>IP o nombre actual del servidor<input id="cHost" placeholder="192.168.1.50" autocomplete="off"></label>
+        <label class="w-port">Puerto SSH<input id="cPort" type="number" value="22" min="1" max="65535"></label>
+        <label>Usuario<input id="cUser" placeholder="root o usuario con sudo" autocomplete="off"></label>
+        <label>Contraseña
+          <span class="pw-wrap"><input id="cPass" type="password" autocomplete="off"><button type="button" class="eye" data-for="cPass" title="Mostrar">👁</button></span>
+        </label>
+      </div>
+      <div class="actions">
+        <button class="primary" id="btnConnect">Conectar y detectar</button>
+        <button id="btnSave">Guardar servidor</button>
+        <span class="hint">¿El servidor no tiene red? No hace falta conectar: completá los datos abajo y usá <b>Comandos para consola</b>.</span>
+      </div>
+      <div id="detectBox" class="detect hidden"></div>
+    </section>
+
+    <!-- Tabs -->
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="ip">IP fija</button>
+      <button class="tab" data-tab="ad">Acceso por grupos AD</button>
+      <button class="tab" data-tab="console">Comandos para consola</button>
+      <button class="tab" data-tab="log">Registro</button>
+    </nav>
+
+    <!-- 2. IP fija -->
+    <section class="card tab-panel" id="tab-ip">
+      <div class="card-head"><h2><span class="step">2</span> Configurar IP fija</h2>
+        <button class="small" id="btnFillCurrent" title="Copia la IP, gateway y DNS actuales de la interfaz">Usar valores actuales</button>
+      </div>
+      <div class="grid">
+        <label>Interfaz de red
+          <select id="ipIface"><option value="">— conectá para ver las interfaces —</option></select>
+          <input id="ipIfaceText" class="hidden" placeholder="ej: ens192, eth0">
+        </label>
+        <label>IP nueva<input id="ipAddr" placeholder="10.10.20.15"></label>
+        <label>Máscara<select id="ipMask"></select></label>
+        <label>Gateway<input id="ipGw" placeholder="10.10.20.1"></label>
+        <label>DNS primario<input id="ipDns1" placeholder="10.10.0.10"></label>
+        <label>DNS secundario<input id="ipDns2" placeholder="opcional"></label>
+        <label>Dominio de búsqueda<input id="ipSearch" placeholder="opcional, ej: empresa.local"></label>
+        <label>Hostname nuevo<input id="ipHostname" placeholder="opcional"></label>
+      </div>
+      <div id="ipValidation" class="validation"></div>
+      <div class="rollback">
+        <label class="check"><input type="checkbox" id="ipRollback" checked> Volver atrás automáticamente si no puedo reconectar con la IP nueva en
+          <input type="number" id="ipRollbackSecs" value="120" min="30" max="900" class="tiny"> segundos</label>
+        <p class="hint">Recomendado. Desactivalo solo si esta PC no va a poder llegar a la IP nueva (otra VLAN / red).</p>
+      </div>
+      <div class="actions">
+        <button class="primary" id="btnApplyIp">Aplicar por SSH</button>
+        <button id="btnIpCommands">Ver comandos para consola</button>
+      </div>
+      <ol id="ipProgress" class="progress hidden"></ol>
+    </section>
+
+    <!-- 3. AD -->
+    <section class="card tab-panel hidden" id="tab-ad">
+      <div class="card-head"><h2><span class="step">2</span> Acceso por grupos de seguridad de AD</h2>
+        <button class="small" id="btnAdRefresh">Actualizar estado</button>
+      </div>
+      <div id="adStatus" class="ad-status"><p class="hint">Conectá el servidor para ver si está unido al dominio y qué grupos tienen acceso.</p></div>
+
+      <h3 class="sub">Dar acceso a un grupo</h3>
+      <div class="grid">
+        <label>Grupo(s) de AD<input id="adGroup" placeholder="GRP-Linux-Admins   (varios: separados por coma)"></label>
+        <label>Dominio<input id="adDomain" placeholder="empresa.local (se detecta solo)"></label>
+        <label>GID unix esperado<input id="adGid" placeholder="opcional, ej: 50010"></label>
+      </div>
+      <div class="access-levels" role="radiogroup">
+        <label class="level"><input type="radio" name="adAccess" value="login" checked><span><b>Solo iniciar sesión</b><small>Pueden entrar por SSH/consola, sin privilegios.</small></span></label>
+        <label class="level"><input type="radio" name="adAccess" value="sudo"><span><b>Administrador</b><small>Login + sudo (pide su propia contraseña).</small></span></label>
+        <label class="level"><input type="radio" name="adAccess" value="sudo-nopasswd"><span><b>Admin sin contraseña</b><small>Login + sudo NOPASSWD (para automatizaciones).</small></span></label>
+      </div>
+      <div class="actions">
+        <button id="btnAdVerify">Verificar grupo</button>
+        <button class="primary" id="btnAdAdd">Dar acceso</button>
+        <button id="btnAdCommands">Ver comandos para consola</button>
+      </div>
+      <div id="adResult"></div>
+
+      <details class="join" id="joinBox">
+        <summary>Unir el servidor al dominio (si todavía no lo está)</summary>
+        <div class="grid">
+          <label>Dominio<input id="jDomain" placeholder="empresa.local"></label>
+          <label>Usuario de AD con permiso para unir equipos<input id="jUser" placeholder="admin.linux" autocomplete="off"></label>
+          <label>Contraseña<span class="pw-wrap"><input id="jPass" type="password" autocomplete="off"><button type="button" class="eye" data-for="jPass">👁</button></span></label>
+          <label>OU de destino (opcional)<input id="jOu" placeholder="OU=Linux,OU=Servers,DC=empresa,DC=local"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="jInstall" checked> Instalar los paquetes necesarios (realmd, sssd, adcli...)</label>
+        <label class="check"><input type="checkbox" id="jIdmap" checked> Usar los UID/GID unix definidos en AD (recomendado si sus grupos tienen GID unix)</label>
+        <p class="hint">Después de unir, nadie del dominio puede entrar hasta que agregues grupos arriba. Los DNS del servidor deben apuntar a los controladores de dominio y la hora debe estar sincronizada.</p>
+        <div class="actions">
+          <button class="primary" id="btnJoin">Unir al dominio</button>
+          <button id="btnJoinCommands">Ver comandos para consola</button>
+        </div>
+      </details>
+    </section>
+
+    <!-- 4. Consola -->
+    <section class="card tab-panel hidden" id="tab-console">
+      <div class="card-head"><h2><span class="step">2</span> Comandos para ejecutar en la consola del servidor</h2></div>
+      <p class="hint">Para servidores sin red (o cuando preferís hacerlo a mano desde la consola de VMware/Hyper-V/iLO/iDRAC). Usa los datos cargados en las pestañas <b>IP fija</b> y <b>Acceso por grupos AD</b>.</p>
+      <div class="grid">
+        <label>Sistema operativo<select id="conDistro"></select></label>
+        <label>Qué querés hacer<select id="conTask">
+          <option value="ip">Configurar IP fija</option>
+          <option value="ad">Dar acceso a grupos AD</option>
+          <option value="join">Unir al dominio</option>
+          <option value="idmap">Usar UID/GID de AD (desactivar ID mapping)</option>
+        </select></label>
+      </div>
+      <div class="code-head">
+        <span id="conTitle"></span>
+        <span><button class="small" id="btnCopy">Copiar</button> <button class="small" id="btnDownload">Descargar .sh</button></span>
+      </div>
+      <pre id="conCode" class="code"></pre>
+    </section>
+
+    <!-- 5. Registro -->
+    <section class="card tab-panel hidden" id="tab-log">
+      <div class="card-head"><h2>Registro de esta sesión</h2><button class="small" id="btnClearLog">Limpiar</button></div>
+      <div id="logList" class="log-list"><p class="hint">Todavía no se ejecutó nada.</p></div>
+    </section>
+  </main>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box">
+    <h3 id="modalTitle"></h3>
+    <div id="modalBody"></div>
+    <div class="actions right">
+      <button id="modalCancel">Cancelar</button>
+      <button class="primary" id="modalOk">Confirmar</button>
+    </div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
