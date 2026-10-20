@@ -3,23 +3,38 @@
 ACTION=${LCT_ACTION:-test}
 lct_os
 
-# Prueba una URL. Imprime "codigo|error". Sin proxy: $2 vacio.
+# Prueba una URL. Imprime "codigo|error|auth|bloqueado|ssl". Sin proxy: $2 vacio.
+#  auth      = esquemas que ofrece el proxy al pedir autenticacion (Basic,NTLM,Negotiate)
+#  bloqueado = 1 si el 403 lo genero el proxy (no el sitio)
+#  ssl       = 1 si fallo la validacion del certificado HTTPS (tipico de inspeccion SSL)
 px_probe() {
-  local url=$1 px=$2 code err ef
-  ef=$(mktemp)
+  local url=$1 px=$2 code="" conn="" err="" ef hf out auth="" blk=0 ssl=0
+  ef=$(mktemp); hf=$(mktemp)
   if lct_has curl; then
-    if [ -n "$px" ]; then code=$(curl -sS -m 12 -o /dev/null -w '%{http_code}' -x "$px" "$url" 2>"$ef")
-    else code=$(curl -sS -m 12 -o /dev/null -w '%{http_code}' --noproxy '*' "$url" 2>"$ef"); fi
+    if [ -n "$px" ]; then
+      out=$(curl -sS -m 12 -o /dev/null -D "$hf" -w '%{http_code} %{http_connect}' -x "$px" "$url" 2>"$ef")
+    else
+      out=$(curl -sS -m 12 -o /dev/null -D "$hf" -w '%{http_code} %{http_connect}' --noproxy '*' "$url" 2>"$ef")
+    fi
+    code=${out%% *}; conn=${out##* }
+    # Si el proxy rechazo el CONNECT (https), el codigo esta en http_connect
+    if { [ "$code" = 000 ] || [ -z "$code" ]; } && [ -n "$conn" ] && [ "$conn" != 000 ] && [ "$conn" != 200 ]; then code=$conn; fi
   elif lct_has wget; then
-    if [ -n "$px" ]; then code=$(wget -S --spider -T 12 -t 1 -e use_proxy=on -e http_proxy="$px" -e https_proxy="$px" "$url" 2>&1 | tee "$ef" | awk '/HTTP\//{c=$2} END{print c+0}')
-    else code=$(wget -S --spider -T 12 -t 1 --no-proxy "$url" 2>&1 | tee "$ef" | awk '/HTTP\//{c=$2} END{print c+0}'); fi
+    if [ -n "$px" ]; then out=$(wget -S --spider -T 12 -t 1 -e use_proxy=on -e http_proxy="$px" -e https_proxy="$px" "$url" 2>&1)
+    else out=$(wget -S --spider -T 12 -t 1 --no-proxy "$url" 2>&1); fi
+    echo "$out" > "$ef"; echo "$out" | sed 's/^  //' > "$hf"
+    code=$(echo "$out" | awk '/HTTP\//{c=$2} END{print c+0}')
   else
-    echo "000|ni curl ni wget estan instalados"; rm -f "$ef"; return
+    echo "000|ni curl ni wget estan instalados|||"; rm -f "$ef" "$hf"; return
   fi
-  err=$(grep -iE 'curl:|error|fail|unable|refused|timed out|resolve' "$ef" | head -n1 | tr '|' ' ' | cut -c1-160)
-  rm -f "$ef"
+  tr -d '\r' < "$hf" > "$hf.n" && mv "$hf.n" "$hf"
+  err=$(grep -iE 'curl:|error|fail|unable|refused|timed out|resolve|certificate' "$ef" | head -n1 | tr '|' ' ' | sed 's/^curl: ([0-9]*) //' | cut -c1-160)
+  auth=$(grep -i '^Proxy-Authenticate:' "$hf" | awk '{print $2}' | sed 's/,$//' | awk '!s[$0]++' | paste -sd, -)
+  if [ "$code" = 403 ] && grep -qiE '^x-squid-error|^proxy-status|^x-bluecoat|^x-zscaler|^x-forcepoint|^server:.*(squid|bluecoat|proxysg|zscaler|mcafee|webwasher|forcepoint|websense|fortigate|fortiweb|cisco|ironport|skyhigh)' "$hf"; then blk=1; fi
+  if grep -qiE 'SSL certificate problem|certificate verify failed|self.signed certificate|unable to get local issuer|certificate is not trusted|ERROR: cannot verify' "$ef"; then ssl=1; fi
+  rm -f "$ef" "$hf"
   [ -z "$code" ] && code=000
-  echo "${code}|${err}"
+  echo "${code}|${err}|${auth}|${blk}|${ssl}"
 }
 
 px_targets() {
@@ -63,6 +78,12 @@ case "$ACTION" in
       echo "PX_DNS=ok"
     else
       echo "PX_DNS=fail"
+    fi
+    pip=$(getent hosts "$phost" 2>/dev/null | awk '{print $1; exit}')
+    [ -z "$pip" ] && echo "$phost" | grep -qE '^[0-9.]+$' && pip=$phost
+    echo "PX_IP=$pip"
+    if [ -n "$pip" ] && lct_has ip; then
+      echo "SRC_IP=$(ip -4 route get "$pip" 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1)"
     fi
     if timeout 6 bash -c "exec 3<>/dev/tcp/$phost/$pport" 2>/dev/null; then echo "PX_PORT=ok"; else echo "PX_PORT=fail"; fi
     for t in $(px_targets); do

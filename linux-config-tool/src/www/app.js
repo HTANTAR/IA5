@@ -359,6 +359,86 @@ const LCT = (() => {
     return { ok: true, text: 'Llega (HTTP ' + code + ')' };
   }
 
+  const hostPort = (u) => { const n = normalizeProxy(u); return n.host ? (n.host + ':' + n.port).toLowerCase() : ''; };
+  const okCode = (c) => { c = +c; return c > 0 && c !== 407 && !(c >= 502 && c <= 504); };
+
+  // Parsea la salida de proxy.sh test
+  function parseProxyTest(text) {
+    const kv = parseKV(text), rows = [];
+    String(text || '').split(/\r?\n/).forEach((l) => {
+      if (!l.startsWith('TEST|')) return;
+      const f = l.split('|');
+      const cell = (i) => ({ code: f[i] || '000', err: f[i + 1] || '', auth: f[i + 2] || '', blk: f[i + 3] === '1', ssl: f[i + 4] === '1' });
+      rows.push({ url: f[1], d: cell(2), p: cell(7) });
+    });
+    return { dns: kv.PX_DNS !== 'fail', port: kv.PX_PORT !== 'fail', host: kv.PX_HOST || '', ip: kv.PX_IP || '', src: kv.SRC_IP || '', rows };
+  }
+
+  function serverCell(c) {
+    if (c.ssl) return { ok: false, text: 'Certificado HTTPS no confiable (inspección SSL)' };
+    if (c.code === '407') return { ok: false, text: 'Pide autenticación' + (c.auth ? ' (' + c.auth + ')' : '') };
+    if (c.code === '403' && c.blk) return { ok: false, text: 'Bloqueado por el proxy (403)' };
+    return reachInfo(c.code, c.err);
+  }
+  function pcCell(list, target) {
+    const a = list.find((r) => r.Target === target && r.Mode === 'proxy');
+    const w = list.find((r) => r.Target === target && r.Mode === 'proxy-windows');
+    const one = (r) => r.Code ? (r.Blocked ? { ok: false, text: 'Bloqueado por el proxy (403)' } : okCode(r.Code) ? { ok: true, text: 'Llega (HTTP ' + r.Code + ')' } : r.Code === 407 ? { ok: false, text: 'Pide autenticación' + (r.ProxyAuth ? ' (' + r.ProxyAuth + ')' : '') } : { ok: false, text: 'HTTP ' + r.Code })
+      : { ok: false, text: 'No llega — ' + (r.Error || r.Status) };
+    if (!a) return { ok: false, text: '-' };
+    if (a.Code === 407 && w) return okCode(w.Code) ? { ok: true, win: true, text: 'Solo con tu usuario de Windows (' + (a.ProxyAuth || 'NTLM/Kerberos') + ')' } : one(a);
+    return one(a);
+  }
+  function pcSysCell(list, target) {
+    const r = list.find((x) => x.Target === target && x.Mode === 'system');
+    if (!r) return { ok: false, text: '-' };
+    const via = r.Via ? 'por ' + r.Via : 'directo';
+    return r.Code && okCode(r.Code) && !r.Blocked ? { ok: true, text: 'Llega ' + via } : { ok: false, text: (r.Code ? 'HTTP ' + r.Code : 'No llega') + ' ' + via };
+  }
+
+  // Diagnostico combinando la prueba desde el servidor y desde la PC
+  function proxyVerdict(srv, pc, typed) {
+    const m = []; let suggest = '';
+    const res = (pc && pc.Results) || [];
+    const sp = srv.rows.map((r) => r.p);
+    const sOk = sp.some((c) => okCode(c.code) && !c.ssl && !(c.code === '403' && c.blk));
+    const pcAnonOk = res.some((r) => r.Mode === 'proxy' && okCode(r.Code) && !r.Blocked);
+    const pcWinOk = res.some((r) => r.Mode === 'proxy-windows' && okCode(r.Code) && !r.Blocked);
+    const pcOk = pcAnonOk || pcWinOk;
+    const pcInfo = (pc && pc.Pc) || {};
+    const pcVia = pcInfo.Suggested || ((res.find((r) => r.Mode === 'system' && r.Via) || {}).Via) || '';
+    const differs = !!pcVia && hostPort(pcVia) !== hostPort(typed);
+    const n = normalizeProxy(typed), hp = n.host + ':' + n.port;
+    const src = srv.src ? srv.src : 'la IP del servidor';
+    if (sOk) {
+      m.push({ level: 'ok', text: 'Desde el servidor el proxy funciona: llega a los repositorios. Ya podés unir al dominio / instalar paquetes, o dejarlo fijo con "Configurar en el servidor".' });
+    } else if (!srv.dns) {
+      m.push({ level: 'err', text: 'El servidor no resuelve el nombre "' + srv.host + '" (sus DNS no lo conocen' + (pcOk ? '; tu PC sí' : '') + '). Escribí el proxy con su IP en lugar del nombre.' });
+    } else if (!srv.port) {
+      m.push({ level: 'err', text: 'El servidor no logra conectarse al proxy ' + hp + (srv.ip && srv.ip !== n.host ? ' (' + srv.ip + ')' : '') + '. ' +
+        (pcOk ? 'Tu PC sí llega, así que hay un firewall entre la red del servidor y el proxy. Pedile a redes que habiliten TCP ' + src + ' → ' + (srv.ip || n.host) + ':' + n.port + ', o preguntá qué proxy corresponde a la red de servidores.'
+              : 'Revisá dirección y puerto.') });
+    } else if (sp.some((c) => c.code === '407')) {
+      const auths = Array.from(new Set(sp.map((c) => c.auth).join(',').split(',').filter(Boolean)));
+      if (n.hasAuth) m.push({ level: 'err', text: 'El proxy rechazó el usuario y la contraseña que escribiste' + (auths.length ? ' (acepta: ' + auths.join(', ') + ')' : '') + '.' });
+      else if (auths.some((a) => /^basic$/i.test(a))) m.push({ level: 'err', text: 'El proxy pide usuario y contraseña.' + (pcWinOk ? ' Tu PC entra sola porque usa tu sesión de Windows; el servidor no tiene esa sesión.' : '') + ' Escribilo así: http://usuario:clave@' + hp + ' (mejor un usuario de servicio que no expire).' });
+      else m.push({ level: 'err', text: 'El proxy solo acepta autenticación de Windows (' + (auths.join(', ') || 'NTLM/Kerberos') + ')' + (pcWinOk ? ': por eso desde tu PC funciona, entra con tu sesión de Windows' : '') + '. apt/dnf en Linux no pueden autenticarse así. Opciones: pedir al equipo del proxy una excepción sin autenticación para ' + src + ', que habiliten autenticación Basic para un usuario de servicio, o usar el proxy que corresponda a servidores.' });
+    } else if (sp.some((c) => c.code === '403')) {
+      m.push({ level: 'err', text: 'El proxy rechaza las conexiones del servidor (403' + (sp.some((c) => c.blk) ? ', bloqueo del propio proxy' : '') + ').' + (pcOk ? ' Tu PC sí pasa, así que seguramente filtra por IP o por usuario: pedí que habiliten ' + src + '.' : '') });
+    } else if (sp.some((c) => c.ssl)) {
+      const ss = res.find((r) => r.CertRoot);
+      m.push({ level: 'err', text: 'El proxy hace inspección SSL y el servidor no confía en su certificado.' + (ss ? ' Tu PC ve el certificado emitido por: ' + ss.CertRoot + '.' : '') + ' Hay que instalar ese certificado raíz corporativo en el servidor.' });
+    } else {
+      const e = sp.find((c) => c.err);
+      m.push({ level: 'err', text: 'Por el proxy no llega' + (e ? ': ' + e.err : '.') + (pcOk ? ' Desde tu PC el mismo proxy sí funciona.' : '') });
+    }
+    if (!sOk && differs) {
+      m.push({ level: 'info', text: 'Tu PC no navega por ' + hp + ' sino por ' + pcVia + (pcInfo.AutoConfigUrl ? ' (configuración automática: ' + pcInfo.AutoConfigUrl + ')' : '') + '. Probá con ese.' });
+      suggest = pcVia;
+    }
+    return { msgs: m, suggest, serverOk: sOk };
+  }
+
   function proxyCommands(dk, p) {
     const d = distro(dk), u = p.url || 'http://proxy.empresa.local:8080', np = p.no || 'localhost,127.0.0.1';
     const n = normalizeProxy(u), L = [];
@@ -400,7 +480,7 @@ const LCT = (() => {
 
   return { shq, isIp, ipToInt, intToIp, prefixToMask, maskToPrefix, networkOf, sameNet, isHostname, validateIp, parseDetect, parseKV,
     header, assemble, DISTROS, distro, distroFromDetect, ipCommands, adCommands, joinCommands, idmapCommands, fqGroup, sudoEsc, fileSafe,
-    normalizeProxy, stripProxyAuth, maskProxy, reachInfo, proxyCommands };
+    normalizeProxy, stripProxyAuth, maskProxy, reachInfo, proxyCommands, parseProxyTest, proxyVerdict, serverCell, pcCell, pcSysCell };
 })();
 
 if (typeof module !== 'undefined') { module.exports = LCT; }
@@ -584,22 +664,36 @@ if (typeof window !== 'undefined') (function () {
 
   async function proxyTest() {
     const px = proxyVals(true); if (!px) return;
-    $('pxResult').innerHTML = msgs([{ level: 'info', text: 'Probando desde el servidor...' }]);
-    const res = await runRemote('Probar proxy ' + LCT.maskProxy(px.url), 'proxy', { LCT_ACTION: 'test', LCT_PROXY: px.url, LCT_NOPROXY: px.no }, { asRoot: false, timeout: 120 });
+    $('pxResult').innerHTML = msgs([{ level: 'info', text: 'Probando desde el servidor y desde esta PC... (puede tardar hasta un minuto)' }]);
+    const res = await runRemote('Probar proxy ' + LCT.maskProxy(px.url), 'proxy', { LCT_ACTION: 'test', LCT_PROXY: px.url, LCT_NOPROXY: px.no }, { asRoot: false, timeout: 150 });
     if (!res.ok) { $('pxResult').innerHTML = msgs([{ level: 'err', text: res.error }]); return; }
-    const rows = res.r.Output.split(/\r?\n/).filter((l) => l.startsWith('TEST|')).map((l) => {
-      const f = l.split('|'); return { url: f[1], d: LCT.reachInfo(f[2], f[3]), p: LCT.reachInfo(f[4], f[5]) };
-    });
-    const m = [], kv = res.kv;
-    if (kv.PX_DNS === 'fail') m.push({ level: 'err', text: 'El servidor no resuelve el nombre del proxy "' + kv.PX_HOST + '" (DNS). Probá con la IP del proxy o revisá los DNS del servidor.' });
-    else if (kv.PX_PORT === 'fail') m.push({ level: 'err', text: 'El servidor no puede conectarse al proxy ' + kv.PX_HOST + ' en ese puerto (puerto equivocado o firewall).' });
-    const anyP = rows.some((r) => r.p.ok), anyD = rows.some((r) => r.d.ok), auth = rows.some((r) => r.p.auth);
-    if (anyP) m.push({ level: 'ok', text: 'El proxy funciona: el servidor llega a internet a través de él. Ya podés instalar paquetes / unir al dominio, o dejarlo fijo con "Configurar en el servidor".' });
-    else if (auth) m.push({ level: 'err', text: 'El proxy pide usuario y contraseña. Escribilo así: http://usuario:clave@proxy:puerto' });
-    else if (anyD && !m.length) m.push({ level: 'warn', text: 'El servidor sale a internet directo, sin proxy; pero por el proxy no llega. Revisá la dirección.' });
-    else if (!m.length) m.push({ level: 'err', text: 'Ni directo ni por el proxy llega a los repositorios.' });
-    $('pxResult').innerHTML = msgs(m) + (rows.length ? '<table><thead><tr><th>Destino</th><th>Directo (sin proxy)</th><th>Por el proxy</th></tr></thead><tbody>' +
-      rows.map((r) => '<tr><td class="mono">' + esc(r.url) + '</td><td class="' + (r.d.ok ? 'ok-t' : 'err-t') + '">' + esc(r.d.text) + '</td><td class="' + (r.p.ok ? 'ok-t' : 'err-t') + '">' + esc(r.p.text) + '</td></tr>').join('') + '</tbody></table>' : '');
+    const srv = LCT.parseProxyTest(res.r.Output);
+    let pc = null;
+    try { pc = await api('/api/proxytest', { proxy: px.url, targets: srv.rows.map((r) => r.url), timeoutMs: 8000 }); } catch (e) { pc = null; }
+    const v = LCT.proxyVerdict(srv, pc, px.url);
+    const list = (pc && pc.Results) || [];
+    const td = (c) => '<td class="' + (c.ok ? 'ok-t' : 'err-t') + '">' + esc(c.text) + '</td>';
+    let html = msgs(v.msgs);
+    if (v.suggest) html += '<div class="actions"><button class="small primary" id="btnPxUseSuggest">Usar ' + esc(v.suggest) + ' y probar</button></div>';
+    html += '<table><thead><tr><th>Destino</th><th>Servidor sin proxy</th><th>Servidor por el proxy</th><th>Tu PC por el proxy</th><th>Tu PC normalmente</th></tr></thead><tbody>' +
+      srv.rows.map((r) => '<tr><td class="mono">' + esc(r.url) + '</td>' + td(LCT.serverCell(r.d)) + td(LCT.serverCell(r.p)) +
+        (pc ? td(LCT.pcCell(list, r.url)) + td(LCT.pcSysCell(list, r.url)) : '<td>-</td><td>-</td>') + '</tr>').join('') + '</tbody></table>';
+    const info = [];
+    if (srv.src) info.push('IP de salida del servidor hacia el proxy: <span class="mono">' + esc(srv.src) + '</span>');
+    if (srv.ip && srv.ip !== srv.host) info.push('el servidor resuelve ' + esc(srv.host) + ' como <span class="mono">' + esc(srv.ip) + '</span>');
+    if (pc && pc.Pc) info.push('Windows en tu PC usa: <span class="mono">' + esc(pc.Pc.Suggested || 'conexión directa') + '</span>' + (pc.Pc.AutoConfigUrl ? ' (PAC: <span class="mono">' + esc(pc.Pc.AutoConfigUrl) + '</span>)' : ''));
+    if (info.length) html += '<p class="hint">' + info.join(' · ') + '</p>';
+    $('pxResult').innerHTML = html;
+    const b = $('btnPxUseSuggest');
+    if (b) b.onclick = () => { $('pxUrl').value = v.suggest; updateProxyUi(); withBusy($('btnPxTest'), proxyTest); };
+  }
+  async function proxyDetectPc() {
+    let pc;
+    try { pc = await api('/api/pcproxy'); } catch (e) { toast('No se pudo leer la configuración de proxy de Windows.'); return; }
+    if (!pc || !pc.Suggested) { $('pxResult').innerHTML = msgs([{ level: 'info', text: 'Esta PC no usa proxy (conexión directa)' + (pc && pc.AutoConfigUrl ? ', o lo decide el script de configuración automática ' + pc.AutoConfigUrl : '') + '.' }]); return; }
+    $('pxUrl').value = pc.Suggested; updateProxyUi();
+    if (!$('pxNo').value.trim()) $('pxNo').value = defaultNoProxy();
+    $('pxResult').innerHTML = msgs([{ level: 'ok', text: 'Proxy de Windows de esta PC: ' + pc.Suggested + (pc.AutoConfigUrl ? ' (elegido por la configuración automática ' + pc.AutoConfigUrl + ')' : '') + '. Ahora probalo desde el servidor.' }]);
   }
   async function proxyApply() {
     const px = proxyVals(true); if (!px) return;
@@ -1015,6 +1109,7 @@ if (typeof window !== 'undefined') (function () {
     $('pxNo').addEventListener('change', () => { if ($('pxDefault').checked) saveProxyDefault(); });
     $('pxDefault').addEventListener('change', saveProxyDefault);
     $('btnPxTest').onclick = () => withBusy($('btnPxTest'), proxyTest);
+    $('btnPxDetect').onclick = () => withBusy($('btnPxDetect'), proxyDetectPc);
     $('btnPxApply').onclick = () => withBusy($('btnPxApply'), proxyApply);
     $('btnPxRemove').onclick = () => withBusy($('btnPxRemove'), proxyRemove);
     $('serverList').onclick = async (e) => {

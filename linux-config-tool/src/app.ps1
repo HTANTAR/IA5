@@ -135,6 +135,18 @@ function Invoke-Api($ctx, [string]$path, [string]$method) {
             $ok = [Lct.Ssh]::Probe([string](Get-Prop $b 'host' ''), [int](Get-Prop $b 'port' 22), [int](Get-Prop $b 'timeoutMs' 2000))
             Send-Json $ctx @{ open = $ok } 200
         }
+        '/api/pcproxy' {
+            Send-Json $ctx ([Lct.NetDiag]::GetPcProxy()) 200
+        }
+        '/api/proxytest' {
+            $b = Read-Body $ctx | ConvertFrom-Json
+            $tg = @()
+            foreach ($t in @(Get-Prop $b 'targets' @())) { if ($t) { $tg += [string]$t } }
+            $px = [string](Get-Prop $b 'proxy' '')
+            Write-AppLog ("Prueba de proxy desde esta PC: {0}" -f ($px -replace '//[^@/]+@', '//***@'))
+            $r = [Lct.NetDiag]::Test($px, [string[]]$tg, [int](Get-Prop $b 'timeoutMs' 8000))
+            Send-Json $ctx $r 200
+        }
         '/api/store' {
             if ($method -eq 'POST') {
                 $txt = Read-Body $ctx

@@ -1,9 +1,15 @@
 // Helper SSH para Linux Config Tool.
 // Se compila en tiempo de ejecucion con Add-Type (Windows PowerShell 5.1 => C# 5, sin sintaxis moderna).
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using Microsoft.Win32;
 using Renci.SshNet;
 using Renci.SshNet.Common;
 
@@ -169,6 +175,246 @@ namespace Lct
             {
                 return false;
             }
+        }
+    }
+
+    // ---------------- Diagnostico de proxy desde esta PC ----------------
+    public class ProbeResult
+    {
+        public string Target { get; set; }
+        public string Mode { get; set; }        // proxy | proxy-windows | system
+        public string Via { get; set; }         // proxy realmente usado ("" = directo)
+        public int Code { get; set; }
+        public string Status { get; set; }
+        public string Error { get; set; }
+        public string ProxyAuth { get; set; }   // esquemas que ofrece el proxy en el 407 (Basic, NTLM, Negotiate)
+        public string CertIssuer { get; set; }
+        public string CertRoot { get; set; }
+        public string SslErrors { get; set; }
+        public bool Blocked { get; set; }       // 403 generado por el proxy (no por el sitio)
+        public long Ms { get; set; }
+    }
+
+    public class PcProxyInfo
+    {
+        public string UserName { get; set; }
+        public string ForHttp { get; set; }
+        public string ForHttps { get; set; }
+        public bool ManualEnabled { get; set; }
+        public string ManualServer { get; set; }
+        public string AutoConfigUrl { get; set; }
+        public string Suggested { get; set; }
+    }
+
+    public class ProxyTestResult
+    {
+        public PcProxyInfo Pc { get; set; }
+        public ProbeResult[] Results { get; set; }
+    }
+
+    public static class NetDiag
+    {
+        static NetDiag()
+        {
+            try { ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072 | (SecurityProtocolType)768; } catch (Exception) { }
+        }
+
+        private static string Describe(IWebProxy sys, string url)
+        {
+            try
+            {
+                Uri u = new Uri(url);
+                if (sys == null || sys.IsBypassed(u)) return "";
+                Uri p = sys.GetProxy(u);
+                if (p == null || p.Equals(u) || p.Host == u.Host) return "";
+                return p.Scheme + "://" + p.Authority;
+            }
+            catch (Exception) { return ""; }
+        }
+
+        // "http=p1:8080;https=p2:8080" o "p:8080" -> "http://p:8080"
+        private static string FromManual(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            string pick = s.Trim();
+            foreach (string part in s.Split(';'))
+            {
+                string x = part.Trim();
+                if (x.StartsWith("https=", StringComparison.OrdinalIgnoreCase)) { pick = x.Substring(6); break; }
+                if (x.StartsWith("http=", StringComparison.OrdinalIgnoreCase)) { pick = x.Substring(5); }
+            }
+            if (pick.Contains("=")) pick = pick.Substring(pick.IndexOf('=') + 1);
+            if (pick.Length == 0) return "";
+            return pick.Contains("://") ? pick : "http://" + pick;
+        }
+
+        public static PcProxyInfo GetPcProxy()
+        {
+            PcProxyInfo info = new PcProxyInfo();
+            info.UserName = Environment.UserDomainName + "\\" + Environment.UserName;
+            try
+            {
+                IWebProxy sys = WebRequest.GetSystemWebProxy();
+                info.ForHttp = Describe(sys, "http://archive.ubuntu.com/");
+                info.ForHttps = Describe(sys, "https://cdn.redhat.com/");
+            }
+            catch (Exception) { }
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+            {
+                try
+                {
+                    using (RegistryKey k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Internet Settings"))
+                    {
+                        if (k != null)
+                        {
+                            object pe = k.GetValue("ProxyEnable");
+                            info.ManualEnabled = pe is int && (int)pe == 1;
+                            info.ManualServer = k.GetValue("ProxyServer") as string;
+                            info.AutoConfigUrl = k.GetValue("AutoConfigURL") as string;
+                        }
+                    }
+                }
+                catch (Exception) { }
+            }
+            if (!string.IsNullOrEmpty(info.ForHttp)) info.Suggested = info.ForHttp;
+            else if (!string.IsNullOrEmpty(info.ForHttps)) info.Suggested = info.ForHttps;
+            else if (info.ManualEnabled) info.Suggested = FromManual(info.ManualServer);
+            else info.Suggested = "";
+            return info;
+        }
+
+        // mode: "proxy" (anonimo o con usuario:clave de la URL), "proxy-windows" (credenciales de Windows), "system" (como navega esta PC)
+        public static ProbeResult Probe(string target, string mode, string proxyUrl, int timeoutMs)
+        {
+            ProbeResult r = new ProbeResult();
+            r.Target = target; r.Mode = mode; r.Via = ""; r.Status = ""; r.Error = ""; r.ProxyAuth = "";
+            Stopwatch sw = Stopwatch.StartNew();
+            string issuer = null, root = null, sslErr = null;
+            try
+            {
+                Uri tu = new Uri(target);
+                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(tu);
+                req.Method = "GET";
+                req.AllowAutoRedirect = false;
+                req.KeepAlive = false;
+                req.Timeout = timeoutMs;
+                req.ReadWriteTimeout = timeoutMs;
+                req.UserAgent = "LinuxConfigTool/1.0";
+                req.ConnectionGroupName = Guid.NewGuid().ToString("N");
+                if (mode == "system")
+                {
+                    IWebProxy sys = WebRequest.GetSystemWebProxy();
+                    sys.Credentials = CredentialCache.DefaultCredentials;
+                    req.Proxy = sys;
+                    r.Via = Describe(sys, target);
+                }
+                else
+                {
+                    Uri pu = new Uri(proxyUrl);
+                    WebProxy wp = new WebProxy(pu.Scheme + "://" + pu.Host + ":" + pu.Port + "/");
+                    wp.BypassProxyOnLocal = false;
+                    if (!string.IsNullOrEmpty(pu.UserInfo))
+                    {
+                        string[] ui = Uri.UnescapeDataString(pu.UserInfo).Split(new char[] { ':' }, 2);
+                        wp.Credentials = new NetworkCredential(ui[0], ui.Length > 1 ? ui[1] : "");
+                    }
+                    else if (mode == "proxy-windows")
+                    {
+                        wp.UseDefaultCredentials = true;
+                    }
+                    else
+                    {
+                        wp.UseDefaultCredentials = false;
+                        wp.Credentials = null;
+                    }
+                    req.Proxy = wp;
+                    r.Via = pu.Scheme + "://" + pu.Host + ":" + pu.Port;
+                }
+                req.ServerCertificateValidationCallback = delegate(object s, X509Certificate cert, X509Chain chain, SslPolicyErrors errs)
+                {
+                    try
+                    {
+                        if (cert != null) issuer = cert.Issuer;
+                        if (chain != null && chain.ChainElements.Count > 0) root = chain.ChainElements[chain.ChainElements.Count - 1].Certificate.Subject;
+                        if (errs != SslPolicyErrors.None) sslErr = errs.ToString();
+                    }
+                    catch (Exception) { }
+                    return true; // solo diagnostico: no se envian datos
+                };
+                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+                {
+                    r.Code = (int)resp.StatusCode;
+                }
+            }
+            catch (WebException ex)
+            {
+                HttpWebResponse hr = ex.Response as HttpWebResponse;
+                if (hr != null)
+                {
+                    r.Code = (int)hr.StatusCode;
+                    if (r.Code == 403)
+                    {
+                        string all = (hr.Headers["Server"] ?? "") + " " + (hr.Headers["X-Squid-Error"] ?? "") + " " + (hr.Headers["Proxy-Status"] ?? "")
+                            + " " + (hr.Headers["X-BlueCoat-Via"] ?? "") + " " + (hr.Headers["X-Zscaler-Error"] ?? "");
+                        string low = all.ToLowerInvariant();
+                        foreach (string k in new string[] { "squid", "err_", "bluecoat", "proxysg", "zscaler", "mcafee", "webwasher", "forcepoint", "websense", "fortigate", "ironport", "skyhigh", "error=" })
+                        {
+                            if (low.Contains(k)) { r.Blocked = true; break; }
+                        }
+                    }
+                    string[] pa = hr.Headers.GetValues("Proxy-Authenticate");
+                    if (pa != null)
+                    {
+                        List<string> schemes = new List<string>();
+                        foreach (string v in pa)
+                        {
+                            foreach (string piece in v.Split(','))
+                            {
+                                string w = piece.Trim().Split(' ')[0];
+                                if (w.Length > 0 && !w.Contains("=") && !schemes.Contains(w)) schemes.Add(w);
+                            }
+                        }
+                        r.ProxyAuth = string.Join(",", schemes.ToArray());
+                    }
+                    hr.Close();
+                }
+                else
+                {
+                    r.Status = ex.Status.ToString();
+                    r.Error = ex.InnerException != null ? ex.InnerException.Message : ex.Message;
+                }
+            }
+            catch (Exception ex)
+            {
+                r.Status = "Error";
+                r.Error = ex.Message;
+            }
+            r.Ms = sw.ElapsedMilliseconds;
+            r.CertIssuer = issuer;
+            r.CertRoot = root;
+            r.SslErrors = sslErr;
+            return r;
+        }
+
+        public static ProxyTestResult Test(string proxyUrl, string[] targets, int timeoutMs)
+        {
+            ProxyTestResult res = new ProxyTestResult();
+            res.Pc = GetPcProxy();
+            List<ProbeResult> list = new List<ProbeResult>();
+            if (targets == null || targets.Length == 0) targets = new string[] { "http://archive.ubuntu.com/" };
+            if (timeoutMs <= 0) timeoutMs = 8000;
+            bool hasCreds = false;
+            try { hasCreds = !string.IsNullOrEmpty(new Uri(proxyUrl).UserInfo); } catch (Exception) { }
+            foreach (string t in targets)
+            {
+                if (string.IsNullOrEmpty(t)) continue;
+                ProbeResult a = Probe(t, "proxy", proxyUrl, timeoutMs);
+                list.Add(a);
+                if (a.Code == 407 && !hasCreds) list.Add(Probe(t, "proxy-windows", proxyUrl, timeoutMs));
+                list.Add(Probe(t, "system", null, timeoutMs));
+            }
+            res.Results = list.ToArray();
+            return res;
         }
     }
 }
