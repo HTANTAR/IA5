@@ -40,6 +40,7 @@ Requisitos: Windows 10/11 o Windows Server 2016+ (usa Windows PowerShell 5.1 y .
      - `realm join` en la OU indicada, home automático, UID/GID de AD y login con nombre corto (opcional);
      - deja el login cerrado y **habilita automáticamente los grupos cargados arriba** con el nivel elegido;
      - si algo falla muestra la causa (sin repositorios, DNS, permisos en la OU, contraseña, hora) y el detalle del servidor.
+   - *Ver configuración AD completa*: muestra (solo lectura) cómo está integrado un servidor que ya funciona: paquetes, servicios, realm, sssd.conf (contraseñas ocultas), Kerberos, PAM, nsswitch, sudoers, SSH, hora, DNS y los grupos con acceso con su GID. Sirve para copiar la misma configuración en los servidores nuevos.
 4. **Comandos para consola**: elegí la distribución y la tarea; copiá o descargá el `.sh`. La opción *Script automático* detecta la distro sola.
 
 Los servidores se guardan (nombre, IP, usuario; **nunca la contraseña**) en `LinuxConfigTool-datos.json` junto al .exe, y queda un historial en `LinuxConfigTool-historial.log`.

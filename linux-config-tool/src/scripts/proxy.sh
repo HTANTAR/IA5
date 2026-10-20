@@ -37,36 +37,57 @@ px_probe() {
   echo "${code}|${err}|${auth}|${blk}|${ssl}"
 }
 
+# Lista "url tipo" de destinos a probar. tipo: os (repositorios del sistema operativo) | otro (otros repos configurados)
 px_targets() {
-  local u list=""
-  # Repositorio real configurado en el servidor
-  if [ -d /etc/apt ]; then
-    u=$( { grep -hsE '^[[:space:]]*deb[[:space:]]' /etc/apt/sources.list /etc/apt/sources.list.d/*.list | awk '{for(i=2;i<=NF;i++) if($i ~ /^https?:\/\//){print $i; exit}}'
-           grep -hsE '^[[:space:]]*URIs:' /etc/apt/sources.list.d/*.sources | awk '{print $2}'; } | head -n1)
-    [ -n "$u" ] && list="$list $u"
-  fi
-  if [ -d /etc/yum.repos.d ]; then
-    u=$(grep -hsE '^[[:space:]]*(baseurl|mirrorlist|metalink)[[:space:]]*=[[:space:]]*https?://' /etc/yum.repos.d/*.repo | head -n1 | sed -E 's/^[^=]*=[[:space:]]*//')
-    [ -n "$u" ] && list="$list $u"
-  fi
-  if [ -d /etc/zypp/repos.d ]; then
-    u=$(grep -hsE '^[[:space:]]*baseurl[[:space:]]*=[[:space:]]*https?://' /etc/zypp/repos.d/*.repo | head -n1 | sed -E 's/^[^=]*=[[:space:]]*//')
-    [ -n "$u" ] && list="$list $u"
-  fi
-  case "$LCT_OS_ID" in
-    ubuntu) list="$list http://archive.ubuntu.com/ubuntu/" ;;
-    debian) list="$list http://deb.debian.org/debian/" ;;
-    rhel) list="$list https://cdn.redhat.com/" ;;
-    rocky) list="$list https://dl.rockylinux.org/" ;;
-    almalinux) list="$list https://repo.almalinux.org/" ;;
-    ol) list="$list https://yum.oracle.com/" ;;
-    centos) list="$list https://mirror.stream.centos.org/" ;;
-    fedora) list="$list https://mirrors.fedoraproject.org/" ;;
-    sles|sled) list="$list https://updates.suse.com/" ;;
-    opensuse*) list="$list https://download.opensuse.org/" ;;
-  esac
-  # Reducir a esquema://host/ (las variables $releasever etc. no importan para ver si llega) y sin repetidos
-  for u in $list; do echo "$u" | sed -E 's#^(https?://[^/]+).*#\1/#'; done | awk '!seen[$0]++' | head -n 3
+  local code="${VERSION_CODENAME:-}" out
+  [ -z "$code" ] && [ -r /etc/os-release ] && code=$(. /etc/os-release; echo "${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}")
+  out=$(
+    if [ -d /etc/apt ]; then
+      # Formato clasico: deb [opciones] URI suite componentes
+      grep -hsE '^[[:space:]]*deb[[:space:]]' /etc/apt/sources.list /etc/apt/sources.list.d/*.list | sed -E 's/\[[^]]*\]//' |
+        awk -v c="$code" '{u=$2; s=$3; comps=""; for(i=4;i<=NF;i++) comps=comps" "$i
+          suite=(c!="" && (s==c || index(s, c"-")==1)); osrepo=(comps ~ / (restricted|universe|multiverse|contrib|non-free)/ || u ~ /^[a-z]+:\/\/([a-z0-9-]+\.)*(ubuntu\.com|debian\.org)\//)
+          print u, (suite && osrepo) ? "os" : "otro"}'
+      # Formato deb822 (.sources): parrafos con URIs: y Suites:
+      for f in /etc/apt/sources.list.d/*.sources; do
+        [ -f "$f" ] || continue
+        awk -v c="$code" '
+          function flush() { if (uris != "") { n = split(uris, a, " "); for (i = 1; i <= n; i++) { suite = (c != "" && (" " suites " ") ~ (" " c "[ -]")); osrepo = (comps ~ / (restricted|universe|multiverse|contrib|non-free)/ || a[i] ~ /^[a-z]+:\/\/([a-z0-9-]+\.)*(ubuntu\.com|debian\.org)\//); print a[i], (suite && osrepo) ? "os" : "otro" } }; uris = ""; suites = ""; comps = ""; en = 1 }
+          BEGIN { en = 1 }
+          /^[[:space:]]*$/ { if (en) flush(); else { uris = ""; suites = ""; comps = "" }; en = 1; next }
+          tolower($1) == "uris:" { $1 = ""; uris = $0 }
+          tolower($1) == "suites:" { $1 = ""; suites = $0 }
+          tolower($1) == "components:" { $1 = ""; comps = $0 }
+          tolower($1) == "enabled:" && tolower($2) == "no" { en = 0 }
+          END { if (en) flush() }' "$f"
+      done
+    fi
+    if [ -d /etc/yum.repos.d ]; then
+      awk '
+        /^\[/ { id = tolower($0); en = 1 }
+        /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*0/ { en = 0 }
+        /^[[:space:]]*(baseurl|mirrorlist|metalink)[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, ""); split($0, a, /[ ,]/); u[id] = a[1]; t[id] = (id ~ /baseos|appstream|rhel|base\]|updates\]|extras\]|crb|codeready|ol[0-9]_|epel/) ? "os" : "otro" }
+        END { for (k in u) print u[k], t[k] }' /etc/yum.repos.d/*.repo 2>/dev/null
+    fi
+    if [ -d /etc/zypp/repos.d ]; then
+      grep -hsE '^[[:space:]]*baseurl[[:space:]]*=' /etc/zypp/repos.d/*.repo | sed -E 's/^[^=]*=[[:space:]]*//; s/$/ os/'
+    fi
+    case "$LCT_OS_ID" in
+      ubuntu) echo "http://archive.ubuntu.com/ubuntu/ os"; echo "http://security.ubuntu.com/ubuntu/ os" ;;
+      debian) echo "http://deb.debian.org/debian/ os"; echo "http://security.debian.org/ os" ;;
+      rhel) echo "https://cdn.redhat.com/ os" ;;
+      rocky) echo "https://dl.rockylinux.org/ os" ;;
+      almalinux) echo "https://repo.almalinux.org/ os" ;;
+      ol) echo "https://yum.oracle.com/ os" ;;
+      centos) echo "https://mirror.stream.centos.org/ os" ;;
+      fedora) echo "https://mirrors.fedoraproject.org/ os" ;;
+      sles|sled) echo "https://updates.suse.com/ os" ;;
+      opensuse*) echo "https://download.opensuse.org/ os" ;;
+    esac
+  )
+  # esquema://host/ ; primero los del sistema; sin repetidos (si un host aparece como os y otro, gana os)
+  echo "$out" | awk 'NF>=2 && $1 ~ /^https?:\/\// { u=$1; sub(/^(https?:\/\/[^\/]+).*/, "&", u); match(u, /^https?:\/\/[^\/]+/); u=substr(u, RSTART, RLENGTH) "/"; if (!(u in k) || $2=="os") k[u]=$2; if (!(u in o)) { o[u]=++n; ord[n]=u } }
+    END { for (i=1;i<=n;i++) if (k[ord[i]]=="os") print ord[i], "os"; for (i=1;i<=n;i++) if (k[ord[i]]!="os") print ord[i], "otro" }' | head -n 6
 }
 
 case "$ACTION" in
@@ -86,10 +107,11 @@ case "$ACTION" in
       echo "SRC_IP=$(ip -4 route get "$pip" 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1)"
     fi
     if timeout 6 bash -c "exec 3<>/dev/tcp/$phost/$pport" 2>/dev/null; then echo "PX_PORT=ok"; else echo "PX_PORT=fail"; fi
-    for t in $(px_targets); do
+    px_targets | while read -r t kind; do
+      [ -n "$t" ] || continue
       d=$(px_probe "$t" "")
       p=$(px_probe "$t" "$LCT_PROXY")
-      echo "TEST|$t|$d|$p"
+      echo "TEST|$t|$d|$p|$kind"
     done
     echo "LCT_OK=1"
     ;;

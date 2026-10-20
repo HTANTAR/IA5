@@ -114,7 +114,8 @@
     <!-- 3. AD -->
     <section class="card tab-panel hidden" id="tab-ad">
       <div class="card-head"><h2><span class="step">2</span> Acceso por grupos de seguridad de AD</h2>
-        <button class="small" id="btnAdRefresh">Actualizar estado</button>
+        <span><button class="small" id="btnAdInspect" title="Muestra toda la integración con AD del servidor conectado (solo lectura)">Ver configuración AD completa</button>
+        <button class="small" id="btnAdRefresh">Actualizar estado</button></span>
       </div>
       <div id="adStatus" class="ad-status"><p class="hint">Conectá el servidor para ver si está unido al dominio y qué grupos tienen acceso.</p></div>
 
@@ -169,6 +170,7 @@
           <option value="join">Unir al dominio</option>
           <option value="idmap">Usar UID/GID de AD (desactivar ID mapping)</option>
           <option value="proxy">Configurar el proxy de internet</option>
+          <option value="inspect">Ver cómo está configurado AD en un servidor (solo lectura)</option>
         </select></label>
       </div>
       <div class="code-head">

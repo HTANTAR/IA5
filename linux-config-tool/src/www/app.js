@@ -369,7 +369,7 @@ const LCT = (() => {
       if (!l.startsWith('TEST|')) return;
       const f = l.split('|');
       const cell = (i) => ({ code: f[i] || '000', err: f[i + 1] || '', auth: f[i + 2] || '', blk: f[i + 3] === '1', ssl: f[i + 4] === '1' });
-      rows.push({ url: f[1], d: cell(2), p: cell(7) });
+      rows.push({ url: f[1], d: cell(2), p: cell(7), kind: f[12] || 'os' });
     });
     return { dns: kv.PX_DNS !== 'fail', port: kv.PX_PORT !== 'fail', host: kv.PX_HOST || '', ip: kv.PX_IP || '', src: kv.SRC_IP || '', rows };
   }
@@ -397,11 +397,20 @@ const LCT = (() => {
   }
 
   // Diagnostico combinando la prueba desde el servidor y desde la PC
+  const cellOk = (c) => okCode(c.code) && !c.ssl && !(c.code === '403' && c.blk);
+  const hostOf = (u) => String(u).replace(/^[a-z]+:\/\//i, '').replace(/\/.*$/, '');
+
   function proxyVerdict(srv, pc, typed) {
-    const m = []; let suggest = '';
+    const m = []; let suggest = '', request = '';
     const res = (pc && pc.Results) || [];
-    const sp = srv.rows.map((r) => r.p);
-    const sOk = sp.some((c) => okCode(c.code) && !c.ssl && !(c.code === '403' && c.blk));
+    // Lo que importa para instalar paquetes son los repositorios del sistema operativo
+    const osRows = srv.rows.filter((r) => r.kind === 'os').length ? srv.rows.filter((r) => r.kind === 'os') : srv.rows;
+    const sp = osRows.map((r) => r.p);
+    const okRows = osRows.filter((r) => cellOk(r.p)), badRows = osRows.filter((r) => !cellOk(r.p));
+    // Alcanza con que llegue el repositorio principal + el de seguridad (o todos si hay menos)
+    const sOk = okRows.length > 0 && badRows.length === 0;
+    const pcReaches = (url) => res.some((r) => r.Target === url && (r.Mode === 'proxy' || r.Mode === 'proxy-windows') && okCode(r.Code) && !r.Blocked);
+    const otherOk = srv.rows.filter((r) => r.kind !== 'os' && cellOk(r.p));
     const pcAnonOk = res.some((r) => r.Mode === 'proxy' && okCode(r.Code) && !r.Blocked);
     const pcWinOk = res.some((r) => r.Mode === 'proxy-windows' && okCode(r.Code) && !r.Blocked);
     const pcOk = pcAnonOk || pcWinOk;
@@ -410,11 +419,26 @@ const LCT = (() => {
     const differs = !!pcVia && hostPort(pcVia) !== hostPort(typed);
     const n = normalizeProxy(typed), hp = n.host + ':' + n.port;
     const src = srv.src ? srv.src : 'la IP del servidor';
+    const reqRepos = (hosts, code) => 'Pedido de acceso a repositorios de paquetes\n\n' +
+      'Servidor: ' + (srv.src || '<IP del servidor>') + '\n' + 'Proxy: ' + hp + '\n' +
+      'Destinos a habilitar por el proxy (HTTP 80 y HTTPS 443):\n' + hosts.map((h) => '  - ' + h).join('\n') + '\n\n' +
+      'Motivo: instalación y actualización de paquetes del sistema operativo. Hoy el proxy responde ' + (code || 'error') + ' para estos destinos desde el servidor.';
     if (sOk) {
-      m.push({ level: 'ok', text: 'Desde el servidor el proxy funciona: llega a los repositorios. Ya podés unir al dominio / instalar paquetes, o dejarlo fijo con "Configurar en el servidor".' });
+      m.push({ level: 'ok', text: 'Desde el servidor el proxy funciona: llega a los repositorios del sistema (' + okRows.map((r) => hostOf(r.url)).join(', ') + '). Ya podés unir al dominio / instalar paquetes, o dejarlo fijo con "Configurar en el servidor".' });
+    } else if (srv.dns && srv.port && (okRows.length || otherOk.length) && badRows.length) {
+      // El proxy deja salir al servidor pero no hacia todos los repositorios del sistema
+      const blocked = badRows.map((r) => hostOf(r.url));
+      const why = badRows.some((r) => r.p.code === '403') ? 'los bloquea (403)' : badRows.some((r) => r.p.code === '407') ? 'pide autenticación para ellos' : 'no llega a ellos';
+      const allowed = okRows.concat(otherOk).map((r) => hostOf(r.url));
+      const pcAll = badRows.every((r) => pcReaches(r.url));
+      m.push({ level: okRows.length ? 'warn' : 'err', text: 'El proxy deja salir al servidor' + (allowed.length ? ' (llega a ' + allowed.join(', ') + ')' : '') + ', pero ' + why + ': ' + blocked.join(', ') + '. ' +
+        (pcAll ? 'Desde tu PC el mismo proxy sí llega, así que filtra por la red / IP del servidor (' + (srv.src || 'IP del servidor') + ').' : '') +
+        (okRows.length ? ' Puede que la instalación funcione igual si alcanza con ' + okRows.map((r) => hostOf(r.url)).join(', ') + '.' : ' Sin esos repositorios no se pueden instalar paquetes.') });
+      request = reqRepos(blocked, badRows[0].p.code);
     } else if (!srv.dns) {
       m.push({ level: 'err', text: 'El servidor no resuelve el nombre "' + srv.host + '" (sus DNS no lo conocen' + (pcOk ? '; tu PC sí' : '') + '). Escribí el proxy con su IP en lugar del nombre.' });
     } else if (!srv.port) {
+      if (pcOk) request = 'Pedido de regla de firewall\n\nOrigen: ' + (srv.src || '<IP del servidor>') + '\nDestino: ' + (srv.ip || n.host) + ' (proxy ' + n.host + ')\nPuerto: TCP ' + n.port + '\n\nMotivo: salida a internet por el proxy corporativo para instalar y actualizar paquetes del sistema operativo.';
       m.push({ level: 'err', text: 'El servidor no logra conectarse al proxy ' + hp + (srv.ip && srv.ip !== n.host ? ' (' + srv.ip + ')' : '') + '. ' +
         (pcOk ? 'Tu PC sí llega, así que hay un firewall entre la red del servidor y el proxy. Pedile a redes que habiliten TCP ' + src + ' → ' + (srv.ip || n.host) + ':' + n.port + ', o preguntá qué proxy corresponde a la red de servidores.'
               : 'Revisá dirección y puerto.') });
@@ -424,6 +448,7 @@ const LCT = (() => {
       else if (auths.some((a) => /^basic$/i.test(a))) m.push({ level: 'err', text: 'El proxy pide usuario y contraseña.' + (pcWinOk ? ' Tu PC entra sola porque usa tu sesión de Windows; el servidor no tiene esa sesión.' : '') + ' Escribilo así: http://usuario:clave@' + hp + ' (mejor un usuario de servicio que no expire).' });
       else m.push({ level: 'err', text: 'El proxy solo acepta autenticación de Windows (' + (auths.join(', ') || 'NTLM/Kerberos') + ')' + (pcWinOk ? ': por eso desde tu PC funciona, entra con tu sesión de Windows' : '') + '. apt/dnf en Linux no pueden autenticarse así. Opciones: pedir al equipo del proxy una excepción sin autenticación para ' + src + ', que habiliten autenticación Basic para un usuario de servicio, o usar el proxy que corresponda a servidores.' });
     } else if (sp.some((c) => c.code === '403')) {
+      request = reqRepos(osRows.map((r) => hostOf(r.url)), '403');
       m.push({ level: 'err', text: 'El proxy rechaza las conexiones del servidor (403' + (sp.some((c) => c.blk) ? ', bloqueo del propio proxy' : '') + ').' + (pcOk ? ' Tu PC sí pasa, así que seguramente filtra por IP o por usuario: pedí que habiliten ' + src + '.' : '') });
     } else if (sp.some((c) => c.ssl)) {
       const ss = res.find((r) => r.CertRoot);
@@ -436,7 +461,7 @@ const LCT = (() => {
       m.push({ level: 'info', text: 'Tu PC no navega por ' + hp + ' sino por ' + pcVia + (pcInfo.AutoConfigUrl ? ' (configuración automática: ' + pcInfo.AutoConfigUrl + ')' : '') + '. Probá con ese.' });
       suggest = pcVia;
     }
-    return { msgs: m, suggest, serverOk: sOk };
+    return { msgs: m, suggest, request, serverOk: sOk };
   }
 
   function proxyCommands(dk, p) {
@@ -675,8 +700,10 @@ if (typeof window !== 'undefined') (function () {
     const td = (c) => '<td class="' + (c.ok ? 'ok-t' : 'err-t') + '">' + esc(c.text) + '</td>';
     let html = msgs(v.msgs);
     if (v.suggest) html += '<div class="actions"><button class="small primary" id="btnPxUseSuggest">Usar ' + esc(v.suggest) + ' y probar</button></div>';
+    if (v.request) html += '<details class="px-req" open><summary>Texto para pedir la excepción a redes / seguridad <button class="small" id="btnPxCopyReq">Copiar</button></summary><pre class="out" id="pxReqText">' + esc(v.request) + '</pre>' +
+      '<p class="hint">Mientras tanto: si tienen un repositorio interno (mirror) de ' + esc((state.det && state.det.OS_NAME) || 'la distribución') + ', configurándolo en el servidor no hace falta internet.</p></details>';
     html += '<table><thead><tr><th>Destino</th><th>Servidor sin proxy</th><th>Servidor por el proxy</th><th>Tu PC por el proxy</th><th>Tu PC normalmente</th></tr></thead><tbody>' +
-      srv.rows.map((r) => '<tr><td class="mono">' + esc(r.url) + '</td>' + td(LCT.serverCell(r.d)) + td(LCT.serverCell(r.p)) +
+      srv.rows.map((r) => '<tr><td class="mono">' + esc(r.url) + (r.kind === 'os' ? '' : ' <span class="chip">otro repo</span>') + '</td>' + td(LCT.serverCell(r.d)) + td(LCT.serverCell(r.p)) +
         (pc ? td(LCT.pcCell(list, r.url)) + td(LCT.pcSysCell(list, r.url)) : '<td>-</td><td>-</td>') + '</tr>').join('') + '</tbody></table>';
     const info = [];
     if (srv.src) info.push('IP de salida del servidor hacia el proxy: <span class="mono">' + esc(srv.src) + '</span>');
@@ -684,6 +711,8 @@ if (typeof window !== 'undefined') (function () {
     if (pc && pc.Pc) info.push('Windows en tu PC usa: <span class="mono">' + esc(pc.Pc.Suggested || 'conexión directa') + '</span>' + (pc.Pc.AutoConfigUrl ? ' (PAC: <span class="mono">' + esc(pc.Pc.AutoConfigUrl) + '</span>)' : ''));
     if (info.length) html += '<p class="hint">' + info.join(' · ') + '</p>';
     $('pxResult').innerHTML = html;
+    const cb = $('btnPxCopyReq');
+    if (cb) cb.onclick = async (e) => { e.preventDefault(); const t = $('pxReqText').textContent; try { await navigator.clipboard.writeText(t); } catch (er) { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); } toast('Copiado.'); };
     const b = $('btnPxUseSuggest');
     if (b) b.onclick = () => { $('pxUrl').value = v.suggest; updateProxyUi(); withBusy($('btnPxTest'), proxyTest); };
   }
@@ -1029,6 +1058,18 @@ if (typeof window !== 'undefined') (function () {
     $('adResult').innerHTML = html;
   }
 
+  async function adInspect() {
+    $('adResult').innerHTML = msgs([{ level: 'info', text: 'Leyendo la configuración de AD del servidor...' }]);
+    const res = await runRemote('Ver configuración AD', 'inspect', {}, { timeout: 120 });
+    if (!res.r || !res.r.Ok) { $('adResult').innerHTML = msgs([{ level: 'err', text: res.error }]); return; }
+    const out = (res.r.Output || '').trim();
+    $('adResult').innerHTML = '<div class="code-head"><span>Configuración de AD de ' + esc((state.det && (state.det.FQDN || state.det.HOSTNAME)) || conn().host) + ' (solo lectura)</span>' +
+      '<span><button class="small" id="btnInspCopy">Copiar</button> <button class="small" id="btnInspSave">Descargar .txt</button></span></div><pre class="code" id="inspOut"></pre>';
+    $('inspOut').textContent = out;
+    $('btnInspCopy').onclick = async () => { try { await navigator.clipboard.writeText(out); } catch (e) { const ta = document.createElement('textarea'); ta.value = out; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); } toast('Copiado.'); };
+    $('btnInspSave').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([out + '\n'], { type: 'text/plain' })); a.download = 'ad-config-' + ((state.det && state.det.HOSTNAME) || conn().host) + '.txt'; a.click(); };
+  }
+
   // ---------- comandos para consola ----------
   async function renderConsole() {
     const dk = $('conDistro').value || 'rhel8', task = $('conTask').value;
@@ -1050,6 +1091,13 @@ if (typeof window !== 'undefined') (function () {
         title = 'Unir al dominio';
         code = LCT.joinCommands(dk, { domain: $('jDomain').value.trim(), user: $('jUser').value.trim(), ou: $('jOu').value.trim(), idmap: $('jIdmap').checked,
           shortnames: $('jShort').checked, groups: adGroups(), access: adAccess(), proxy: LCT.normalizeProxy($('pxUrl').value).url, noProxy: $('pxNo').value.trim() });
+      } else if (task === 'inspect') {
+        title = 'Ver configuración de AD (solo lectura)';
+        code = '# Copiá y pegá todo en el servidor que ya funciona. No cambia nada: solo muestra la configuración.\n' +
+          '# Las contraseñas que pudiera haber en sssd.conf aparecen como ***OCULTO***.\n' +
+          "cat > /tmp/ver-ad.sh <<'LCT_EOF'\n" + (await script('inspect')).replace(/\s+$/, '') + '\nLCT_EOF\n' +
+          'sudo bash /tmp/ver-ad.sh | tee /tmp/ver-ad-$(hostname -s).txt\n' +
+          '# El resultado queda en /tmp/ver-ad-<servidor>.txt';
       } else if (task === 'proxy') {
         title = 'Proxy de internet';
         code = LCT.proxyCommands(dk, { url: LCT.normalizeProxy($('pxUrl').value).url, no: $('pxNo').value.trim() || defaultNoProxy() });
@@ -1138,6 +1186,7 @@ if (typeof window !== 'undefined') (function () {
     $('btnIpCommands').onclick = () => showConsole('ip');
 
     $('btnAdRefresh').onclick = () => withBusy($('btnAdRefresh'), () => detect(false));
+    $('btnAdInspect').onclick = () => withBusy($('btnAdInspect'), adInspect);
     $('btnAdVerify').onclick = () => withBusy($('btnAdVerify'), adVerify);
     $('btnAdAdd').onclick = () => withBusy($('btnAdAdd'), adAdd);
     $('btnAdCommands').onclick = () => showConsole('ad');
