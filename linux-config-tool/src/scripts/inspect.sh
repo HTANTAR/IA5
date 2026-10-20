@@ -13,13 +13,29 @@ if command -v dpkg-query >/dev/null; then
   dpkg-query -W -f='${Status} ${Package} ${Version}\n' 2>/dev/null | awk '$1=="install" && $3=="installed" {print $4, $5}'
 else
   rpm -qa --qf '%{NAME} %{VERSION}-%{RELEASE}\n' 2>/dev/null
-fi | grep -Ei '^(sssd|realmd|adcli|krb5|libkrb5|samba|winbind|libnss-winbind|libpam-winbind|oddjob|centrify|delinea|pbis|likewise|nslcd|libnss-ldap|libpam-ldap|libnss-sss|libpam-sss|sudo|chrony|ntp|authselect|packagekit)' | sort
+fi | grep -Ei '^(vas|quest|qas|oneidentity|safeguard|sssd|realmd|adcli|krb5|libkrb5|samba|winbind|libnss-winbind|libpam-winbind|oddjob|centrify|delinea|pbis|likewise|nslcd|libnss-ldap|libpam-ldap|libnss-sss|libpam-sss|sudo|chrony|ntp|authselect|packagekit|cyberark|aimprv)' | sort
 
 sec "SERVICIOS"
-for s in sssd realmd oddjobd winbind smbd nslcd centrifydc chrony chronyd ntp systemd-timesyncd; do
+for s in vasd vasypd sssd realmd oddjobd winbind smbd nslcd centrifydc chrony chronyd ntp systemd-timesyncd; do
   st=$(systemctl is-active "$s" 2>/dev/null); en=$(systemctl is-enabled "$s" 2>/dev/null)
   [ -n "$en" ] && [ "$en" != "not-found" ] && echo "$s: $st ($en)"
 done
+
+if [ -x /opt/quest/bin/vastool ]; then
+  V=/opt/quest/bin/vastool
+  sec "ONE IDENTITY AUTHENTICATION SERVICES (VAS / QAS)"
+  $V -v 2>&1 | head -n 3
+  echo "--- dominio";  $V info domain 2>&1 | head -n 3
+  echo "--- sitio";    $V info site 2>&1 | head -n 3
+  echo "--- cuenta de equipo"; $V info id 2>&1 | head -n 5
+  for f in /etc/opt/quest/vas/users.allow /etc/opt/quest/vas/users.deny; do
+    echo "--- $f"; if [ -f "$f" ]; then clean "$f" || echo "(vacio)"; else echo "(no existe)"; fi
+  done
+  echo "--- /etc/opt/quest/vas/vas.conf"; clean /etc/opt/quest/vas/vas.conf | grep -viE 'password|secret'
+  echo "--- archivos en /etc/opt/quest/vas"; ls -la /etc/opt/quest/vas/ 2>/dev/null
+  if [ -x /opt/quest/bin/vgptool ]; then echo "--- politicas de grupo (vasgp)"; /opt/quest/bin/vgptool listgpt 2>&1 | head -n 15; fi
+  echo "--- acceso de $(logname 2>/dev/null || echo "${SUDO_USER:-root}")"; $V user checkaccess "$(logname 2>/dev/null || echo "${SUDO_USER:-root}")" 2>&1 | head -n 5
+fi
 
 sec "REALM (realm list)"
 command -v realm >/dev/null && realm list 2>&1 || echo "realmd no instalado"
@@ -77,6 +93,11 @@ sec "GRUPOS DE AD CON ACCESO (como los ve Linux)"
 groups=""
 command -v realm >/dev/null && groups=$(realm list 2>/dev/null | sed -n 's/^[[:space:]]*permitted-groups:[[:space:]]*//p' | head -n1)
 [ -z "$groups" ] && groups=$(grep -hiE '^[[:space:]]*simple_allow_groups' /etc/sssd/sssd.conf /etc/sssd/conf.d/*.conf 2>/dev/null | sed 's/^[^=]*=[[:space:]]*//' | head -n1)
+[ -z "$groups" ] && [ -f /etc/opt/quest/vas/users.allow ] && groups=$(clean /etc/opt/quest/vas/users.allow | sed 's/^.*\\//; s/@.*$//' | paste -sd, -)
+# grupos usados en sudoers (%grupo)
+sg=$(cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null | grep -oE '^[[:space:]]*%[^[:space:]]+' | sed 's/^[[:space:]]*%//' | sed 's/\\ / /g' | sort -u | paste -sd, -)
+[ -n "$sg" ] && groups="${groups:+$groups,}$sg"
+groups=$(echo "$groups" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | awk 'NF && !s[tolower($0)]++' | paste -sd, -)
 if [ -n "$groups" ]; then
   echo "$groups" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | while IFS= read -r g; do
     [ -n "$g" ] || continue

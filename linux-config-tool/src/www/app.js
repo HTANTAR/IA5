@@ -775,7 +775,7 @@ if (typeof window !== 'undefined') (function () {
     const beName = { nm: 'NetworkManager', netplan: 'netplan', ifupdown: 'ifupdown', ifcfg: 'network-scripts (ifcfg)', wicked: 'wicked', unknown: 'desconocido' };
     const facts = [
       ['Sistema', d.OS_NAME], ['Hostname', d.FQDN || d.HOSTNAME], ['Gestor de red', beName[gwIf.backend] || gwIf.backend || '-'],
-      ['Gateway', d.GW || '-'], ['DNS', d.DNS || '-'], ['Active Directory', adJoined(d) ? 'Unido a ' + adDomainOf(d) : (d.AD_METHOD === 'centrify' || d.AD_METHOD === 'winbind') ? d.AD_METHOD + ': ' + d.AD_DOMAIN : 'No unido'],
+      ['Gateway', d.GW || '-'], ['DNS', d.DNS || '-'], ['Active Directory', adJoined(d) ? 'Unido a ' + adDomainOf(d) : d.AD_METHOD === 'vas' ? 'One Identity (VAS): ' + d.AD_DOMAIN : (d.AD_METHOD === 'centrify' || d.AD_METHOD === 'winbind') ? d.AD_METHOD + ': ' + d.AD_DOMAIN : 'No unido'],
     ];
     let html = (d.limited ? '<div class="msg warn">' + esc(d.limited) + ' Solo se muestra información básica.</div>' : '') +
       '<div class="facts">' + facts.map((f) => '<div class="fact"><small>' + f[0] + '</small><b>' + esc(f[1]) + '</b></div>').join('') + '</div>';
@@ -923,6 +923,15 @@ if (typeof window !== 'undefined') (function () {
   function renderAdStatus() {
     const d = state.det, el = $('adStatus');
     if (!d) return;
+    if (d.AD_METHOD === 'vas') {
+      el.innerHTML = '<div class="msg info">Este servidor está integrado a <b>' + esc(d.AD_DOMAIN) + '</b> con <b>One Identity Authentication Services (VAS/QAS)</b>. No lo unas con SSSD.</div>' +
+        '<div><small class="hint">Grupos con acceso (/etc/opt/quest/vas/users.allow):</small><div class="chips">' +
+        ((d.VAS_ALLOW || '').split(',').filter(Boolean).map((g) => '<span class="gchip">' + esc(g) + '</span>').join('') || '<span class="hint">ninguno (sin users.allow entra todo el dominio)</span>') + '</div></div>' +
+        (d.sudo.length ? '<div><small class="hint">Reglas sudo con grupos:</small><div class="out">' + esc(d.sudo.map((x) => x.rule + '    # ' + x.file).join('\n')) + '</div></div>' : '') +
+        '<p class="hint">Usá "Ver configuración AD completa" para ver todo el detalle.</p>';
+      $('joinBox').open = false;
+      return;
+    }
     if (d.AD_METHOD === 'centrify' || d.AD_METHOD === 'winbind') {
       el.innerHTML = '<div class="msg warn">Este servidor ya está integrado a <b>' + esc(d.AD_DOMAIN) + '</b> con <b>' + (d.AD_METHOD === 'centrify' ? 'Centrify / Delinea' : 'Samba winbind') +
         '</b>. Esta herramienta gestiona el acceso con realmd/SSSD; con ' + (d.AD_METHOD === 'centrify' ? 'Centrify el acceso se da desde las zonas en AD' : 'winbind se usa require_membership_of en pam_winbind') + '. No lo unas de nuevo.</div>';

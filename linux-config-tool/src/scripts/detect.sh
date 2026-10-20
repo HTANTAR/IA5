@@ -82,10 +82,15 @@ if lct_has realm && realm list --name-only 2>/dev/null | grep -q .; then
   ad_method=realm; ad_domain=$(realm list --name-only 2>/dev/null | head -n1)
 elif [ -r /etc/sssd/sssd.conf ] && grep -qiE '^[[:space:]]*id_provider[[:space:]]*=[[:space:]]*(ad|ldap|ipa)' /etc/sssd/sssd.conf; then
   ad_method=sssd; ad_domain=$(awk '/^[[:space:]]*\[domain\//{s=$0; sub(/.*\[domain\//,"",s); sub(/\].*/,"",s); print s; exit}' /etc/sssd/sssd.conf)
+elif [ -x /opt/quest/bin/vastool ] && /opt/quest/bin/vastool info domain >/dev/null 2>&1; then
+  ad_method=vas; ad_domain=$(/opt/quest/bin/vastool info domain 2>/dev/null | head -n1)
 elif lct_has adinfo && adinfo -d >/dev/null 2>&1; then
   ad_method=centrify; ad_domain=$(adinfo -d 2>/dev/null)
 elif lct_has wbinfo && wbinfo -t >/dev/null 2>&1; then
   ad_method=winbind; ad_domain=$(wbinfo --own-domain 2>/dev/null)
+fi
+if [ "$ad_method" = vas ] && [ -f /etc/opt/quest/vas/users.allow ]; then
+  echo "VAS_ALLOW=$(grep -vE '^[[:space:]]*(#|$)' /etc/opt/quest/vas/users.allow | paste -sd, -)"
 fi
 echo "AD_METHOD=$ad_method"
 echo "AD_DOMAIN=$ad_domain"
