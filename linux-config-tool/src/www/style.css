@@ -166,3 +166,9 @@ details.join[open] summary { margin-bottom: 12px; }
 .err-t { color: var(--err); font-weight: 600; }
 .px-req { margin-top: 10px; }
 .px-req summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+.jm { margin: 0 0 12px; }
+.sas-grid { grid-template-columns: 2fr 1fr; margin-top: 12px; }
+@media (max-width: 800px) { .sas-grid { grid-template-columns: 1fr; } }
+details.sas-tpl { margin-top: 8px; }
+details.sas-tpl summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+details.sas-tpl textarea { width: 100%; margin-top: 6px; font-size: 13px; }

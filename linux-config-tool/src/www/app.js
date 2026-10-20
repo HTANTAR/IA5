@@ -322,6 +322,39 @@ const LCT = (() => {
     return L.join('\n');
   }
 
+  function joinCommandsVas(p) {
+    const dom = p.domain || 'empresa.local', user = p.user || 'usuario.admin', deb = p.kind !== 'rpm';
+    const L = ['# ===== Unir al dominio ' + dom + ' con One Identity Safeguard Authentication Services (VAS) =====', '# Ejecutar como root (sudo -i).', ''];
+    L.push('# 1) Copiar los instaladores desde tu PC al servidor (PowerShell en tu PC):');
+    L.push('#    scp "<carpeta>\\vasclnt' + (deb ? '_*_amd64.deb' : '-*.x86_64.rpm') + '" "<carpeta>\\vasgp' + (deb ? '_*_amd64.deb' : '-*.x86_64.rpm') + '" usuario@servidor:/tmp/');
+    L.push('');
+    L.push('# 2) Instalar');
+    L.push(deb ? 'dpkg -i /tmp/vasclnt_*.deb /tmp/vasgp_*.deb' : 'rpm -Uvh /tmp/vasclnt-*.rpm /tmp/vasgp-*.rpm');
+    L.push('/opt/quest/bin/vastool -v');
+    L.push('');
+    L.push('# 3) Unir (pide la contraseña de ' + user + ')');
+    L.push('/opt/quest/bin/vastool -u ' + shq(user) + ' join' + (p.force ? ' -f' : '') + (p.ou ? ' -c ' + shq(p.ou) : '') + (p.name ? ' -n ' + shq(p.name) : '') + ' ' + shq(dom));
+    L.push('[ -x /opt/quest/bin/vgptool ] && /opt/quest/bin/vgptool apply');
+    L.push('/opt/quest/bin/vastool info domain');
+    L.push('');
+    L.push('# 4) Quién puede entrar');
+    const groups = (p.groups || []).filter(Boolean).map((g) => g.toLowerCase());
+    if (groups.length) { L.push("cat > /etc/opt/quest/vas/users.allow <<'EOF'"); groups.forEach((g) => L.push(g)); L.push('EOF'); }
+    else L.push('# echo <grupo> >> /etc/opt/quest/vas/users.allow');
+    const deny = (p.deny || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    if (deny.length) { L.push("cat > /etc/opt/quest/vas/users.deny <<'EOF'"); deny.forEach((x) => L.push(x)); L.push('EOF'); }
+    if (groups.length && (p.access === 'sudo' || p.access === 'sudo-nopasswd')) {
+      L.push(''); L.push('# 5) sudo');
+      groups.forEach((g) => { const f = '/etc/sudoers.d/' + fileSafe(g);
+        L.push("echo '%" + sudoEsc(g) + ' ALL=(ALL) ' + (p.access === 'sudo-nopasswd' ? 'NOPASSWD:ALL' : 'ALL') + "' > " + f + ' && chmod 440 ' + f + ' && visudo -cf ' + f); });
+    }
+    L.push('');
+    L.push('# Verificar con un usuario del grupo (reemplazar USUARIO):');
+    L.push('# /opt/quest/bin/vastool user checkaccess USUARIO');
+    L.push('# id USUARIO');
+    return L.join('\n');
+  }
+
   function idmapCommands(inner) {
     const L = inner ? [] : ['# ===== Usar los UID/GID definidos en AD (ldap_id_mapping = False) =====',
       '# ATENCION: cambia los UID/GID de TODOS los usuarios de AD en este servidor.',
@@ -505,7 +538,7 @@ const LCT = (() => {
 
   return { shq, isIp, ipToInt, intToIp, prefixToMask, maskToPrefix, networkOf, sameNet, isHostname, validateIp, parseDetect, parseKV,
     header, assemble, DISTROS, distro, distroFromDetect, ipCommands, adCommands, joinCommands, idmapCommands, fqGroup, sudoEsc, fileSafe,
-    normalizeProxy, stripProxyAuth, maskProxy, reachInfo, proxyCommands, parseProxyTest, proxyVerdict, serverCell, pcCell, pcSysCell };
+    joinCommandsVas, normalizeProxy, stripProxyAuth, maskProxy, reachInfo, proxyCommands, parseProxyTest, proxyVerdict, serverCell, pcCell, pcSysCell };
 })();
 
 if (typeof module !== 'undefined') { module.exports = LCT; }
@@ -624,6 +657,10 @@ if (typeof window !== 'undefined') (function () {
     if (st.proxy && !$('pxUrl').value) { $('pxUrl').value = st.proxy; $('pxNo').value = st.noProxy || ''; }
     $('pxDefault').checked = !!st.proxy;
     updateProxyUi();
+    $('jSasFolder').value = st.sasFolder || '';
+    $('jDeny').value = st.sasDeny || '';
+    updateDenyCount();
+    setJoinMethod(st.adMethod || 'sssd', false);
     renderServers();
   }
   async function saveStore() { try { await api('/api/store', JSON.stringify(state.store)); } catch (e) { toast('No se pudo guardar: ' + e.message); } }
@@ -647,6 +684,100 @@ if (typeof window !== 'undefined') (function () {
     rec.proxy = px.error ? '' : LCT.stripProxyAuth(px.url); rec.noProxy = $('pxNo').value.trim();
     if (idx >= 0) state.store.servers[idx] = rec; else state.store.servers.unshift(rec);
     saveStore(); renderServers();
+  }
+
+  // ---------- metodo de union (VAS / SSSD) ----------
+  function joinMethod() { const r = document.querySelector('input[name="jMethod"]:checked'); return r ? r.value : 'sssd'; }
+  function setJoinMethod(m, save) {
+    const r = document.querySelector('input[name="jMethod"][value="' + m + '"]'); if (r) r.checked = true;
+    $('jVasBox').classList.toggle('hidden', m !== 'vas');
+    $('jSssdBox').classList.toggle('hidden', m === 'vas');
+    if (save) { state.store.settings = state.store.settings || {}; state.store.settings.adMethod = m; saveStore(); }
+    if (!$('tab-console').classList.contains('hidden')) renderConsole();
+  }
+  function sasKind() {
+    const d = state.det || {};
+    if (!d.OS_ID) return null;
+    return /debian|ubuntu/.test((d.OS_ID || '') + ' ' + (d.OS_LIKE || '')) ? 'deb' : 'rpm';
+  }
+  function updateDenyCount() {
+    const n = $('jDeny').value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean).length;
+    $('jDenyCount').textContent = n ? '(' + n + ' entradas)' : '(vacía: no se escribe users.deny)';
+  }
+  function saveSasSettings() {
+    const st = state.store.settings = state.store.settings || {};
+    st.sasFolder = $('jSasFolder').value.trim();
+    st.sasDeny = $('jDeny').value.replace(/\r/g, '').trim();
+    saveStore(); updateDenyCount();
+  }
+  async function sasFind(quiet) {
+    const folder = $('jSasFolder').value.trim();
+    if (!folder) { if (!quiet) toast('Elegí la carpeta del instalador de Safeguard.'); return null; }
+    const kind = sasKind() || 'deb', arch = (state.det && state.det.ARCH) || 'x86_64';
+    let r;
+    try { r = await api('/api/sas/find', { folder, kind, arch }); } catch (e) { $('jSasFound').textContent = e.message; return null; }
+    if (r.Error || !r.Files || !r.Files.length) {
+      $('jSasFound').innerHTML = '<span class="err-t">' + esc(r.Error || 'No se encontraron paquetes') + '</span>' + (r.Others && r.Others.length ? '<br>Otros archivos vas*: ' + esc(r.Others.map((x) => x.split(/[\\/]/).pop()).join(', ')) : '');
+      return null;
+    }
+    const names = r.Files.map((x) => x.split(/[\\/]/).pop());
+    $('jSasFound').innerHTML = '<span class="ok-t">Encontrados (' + kind + ', ' + esc(arch) + '):</span> <span class="mono">' + esc(names.join(', ')) + '</span>' + (r.GroupPolicy ? '' : ' <span class="hint">(sin vasgp: no se aplicarán políticas de grupo)</span>');
+    return r;
+  }
+  async function sasPick() {
+    let r;
+    try { r = await api('/api/sas/pick', { start: $('jSasFolder').value.trim() }); } catch (e) { toast('No se pudo abrir el selector: ' + e.message); return; }
+    if (r.error) toast('No se pudo abrir el selector de carpetas (' + r.error + '). Escribí la ruta a mano.', 6000);
+    if (r.path) { $('jSasFolder').value = r.path; saveSasSettings(); await sasFind(false); }
+  }
+
+  async function adJoinVas() {
+    const dom = $('jDomain').value.trim(), user = $('jUser').value.trim(), pass = $('jPass').value;
+    if (!dom || !user || !pass) { toast('Completá dominio, usuario y contraseña de AD.'); return; }
+    const d = state.det;
+    if (!d) { toast('Primero conectá el servidor (paso 1).'); return; }
+    const groups = adGroups(), acc = adAccess();
+    let pk = null;
+    if (d.VAS_INSTALLED !== 'yes') { pk = await sasFind(false); if (!pk) return; }
+    const deny = $('jDeny').value.replace(/\r/g, '').trim();
+    const name = $('jName').value.trim();
+    const ok = await confirmBox('Unir al dominio con Safeguard (VAS)',
+      '<p>Servidor: <b>' + esc(d.HOSTNAME || conn().host) + '</b> (' + esc(d.OS_NAME || '') + ')<br>Dominio: <b>' + esc(dom) + '</b><br>Usuario AD: <b>' + esc(user) + '</b>' +
+      ($('jOu').value ? '<br>OU: <b>' + esc($('jOu').value) + '</b>' : '') + '<br>Nombre de equipo: <b>' + esc(name || d.HOSTNAME || '') + '</b>' + ($('jForce').checked ? ' (reemplaza si existe)' : '') + '</p>' +
+      (pk ? '<p>Instalar: <span class="mono">' + esc(pk.Files.map((x) => x.split(/[\\/]/).pop()).join(', ')) + '</span></p>' : '<p>Safeguard ya está instalado en el servidor.</p>') +
+      (deny ? '<p>users.deny: ' + deny.split('\n').length + ' entradas de la plantilla</p>' : '<div class="msg warn">Sin plantilla de users.deny: solo se usará users.allow.</div>') +
+      (groups.length ? '<div class="msg info">Al terminar se habilita: <b>' + esc(groups.join(', ')) + '</b> (' + esc(ACC_TXT[acc]) + ')</div>' : '<div class="msg warn">No cargaste ningún grupo arriba.</div>'), 'Unir');
+    if (!ok) return;
+    let html = '';
+    const show = (extra) => { $('adResult').innerHTML = html + (extra || ''); };
+    const remoteDir = '/tmp/lct-sas-' + Math.random().toString(36).slice(2, 10);
+    if (pk) {
+      show(msgs([{ level: 'info', text: 'Copiando el instalador al servidor...' }]));
+      const c = conn();
+      const up = await api('/api/upload', { host: c.host, port: c.port, user: c.user, password: c.password, files: pk.Files, remoteDir });
+      addLog({ label: 'Subir instalador Safeguard', host: c.host, ok: !!up.Ok, r: { Ok: true, ExitCode: up.Ok ? 0 : 1, Output: (up.Remote || []).join('\n') + (up.ErrorMessage ? '\n' + up.ErrorMessage : '') } });
+      if (!up.Ok) { html += msgs([{ level: 'err', text: 'No se pudo copiar el instalador: ' + up.ErrorMessage }]); show(); return; }
+      html += msgs([{ level: 'ok', text: 'Instalador copiado (' + (up.Transfer || 'sftp') + ').' }]);
+    }
+    show(msgs([{ level: 'info', text: 'Instalando y uniendo al dominio...' }]));
+    const b64 = btoa(unescape(encodeURIComponent(pass)));
+    const res = await runRemote('Unir al dominio ' + dom + ' (Safeguard)', 'ad', { LCT_ACTION: 'sas-join', LCT_SAS_DIR: pk ? remoteDir : '', LCT_DOMAIN: dom, LCT_ADUSER: user, LCT_ADPASS_B64: b64,
+      LCT_OU: $('jOu').value.trim(), LCT_NAME: name, LCT_FORCE: $('jForce').checked ? '1' : '0', LCT_SAS_DENY_B64: deny ? btoa(unescape(encodeURIComponent(deny))) : '' }, { timeout: 900 });
+    $('jPass').value = '';
+    html += msgs([res.ok ? { level: 'ok', text: 'Servidor unido a ' + dom + ' con Safeguard Authentication Services.' } : { level: 'err', text: res.error }]
+      .concat(res.kv.warns.map((w) => ({ level: 'warn', text: w })), res.kv.notes.map((w) => ({ level: 'info', text: w })))) + details(res.kv.details);
+    show();
+    if (!res.ok) return;
+    $('adDomain').value = dom;
+    try { await detect(true); } catch (e) { /* ignore */ }
+    if (groups.length) {
+      show(msgs([{ level: 'info', text: 'Habilitando ' + groups.join(', ') + '...' }]));
+      const r = await grantGroups(groups);
+      html += msgs(r.out) + details(r.det);
+      if (r.out.some((m) => m.level === 'ok')) html += msgs([{ level: 'ok', text: 'Listo: los usuarios de ' + groups.join(', ') + ' ya pueden entrar con su usuario y contraseña de AD.' }]);
+      try { await detect(true); } catch (e) { /* ignore */ }
+    }
+    show();
   }
 
   // ---------- proxy ----------
@@ -917,7 +1048,7 @@ if (typeof window !== 'undefined') (function () {
   function adAccess() { const r = document.querySelector('input[name="adAccess"]:checked'); return r ? r.value : 'login'; }
   function adBaseVars() { return { LCT_DOMAIN: $('adDomain').value.trim(), LCT_EXPECTED_GID: $('adGid').value.trim(), LCT_ACCESS: adAccess() }; }
 
-  function adJoined(d) { d = d || state.det; return !!d && (d.REALM_JOINED === 'yes' || d.AD_METHOD === 'realm' || d.AD_METHOD === 'sssd'); }
+  function adJoined(d) { d = d || state.det; return !!d && (d.REALM_JOINED === 'yes' || d.AD_METHOD === 'realm' || d.AD_METHOD === 'sssd' || d.AD_METHOD === 'vas'); }
   function adDomainOf(d) { return d.REALM_DOMAIN || d.AD_DOMAIN || ''; }
 
   function renderAdStatus() {
@@ -926,10 +1057,14 @@ if (typeof window !== 'undefined') (function () {
     if (d.AD_METHOD === 'vas') {
       el.innerHTML = '<div class="msg info">Este servidor está integrado a <b>' + esc(d.AD_DOMAIN) + '</b> con <b>One Identity Authentication Services (VAS/QAS)</b>. No lo unas con SSSD.</div>' +
         '<div><small class="hint">Grupos con acceso (/etc/opt/quest/vas/users.allow):</small><div class="chips">' +
-        ((d.VAS_ALLOW || '').split(',').filter(Boolean).map((g) => '<span class="gchip">' + esc(g) + '</span>').join('') || '<span class="hint">ninguno (sin users.allow entra todo el dominio)</span>') + '</div></div>' +
+        ((d.VAS_ALLOW || '').split(',').filter(Boolean).map((g) => '<span class="gchip">' + esc(g) + (hasSudo(g) ? ' · sudo' : '') + '<button data-rm="' + esc(g) + '" title="Quitar acceso">✕</button></span>').join('') || '<span class="hint">ninguno (sin users.allow entra todo el dominio)</span>') + '</div></div>' +
         (d.sudo.length ? '<div><small class="hint">Reglas sudo con grupos:</small><div class="out">' + esc(d.sudo.map((x) => x.rule + '    # ' + x.file).join('\n')) + '</div></div>' : '') +
-        '<p class="hint">Usá "Ver configuración AD completa" para ver todo el detalle.</p>';
+        (d.VAS_DENY ? '<div><small class="hint">users.deny (' + d.VAS_DENY.split(',').length + ' entradas):</small> <span class="mono">' + esc(d.VAS_DENY.split(',').slice(0, 6).join(', ') + (d.VAS_DENY.split(',').length > 6 ? ', ...' : '')) + '</span> ' +
+          '<button class="small" id="btnUseDeny">Usar su users.deny como plantilla</button></div>' : '') +
+        '<p class="hint">Versión: ' + esc(d.VAS_VERSION || '?') + '. Usá "Ver configuración AD completa" para ver todo el detalle. "Dar acceso" agrega el grupo a users.allow y a sudoers.</p>';
       $('joinBox').open = false;
+      const bd = $('btnUseDeny');
+      if (bd) bd.onclick = () => { $('jDeny').value = d.VAS_DENY.split(',').join('\n'); setJoinMethod('vas', true); saveSasSettings(); toast('Plantilla de users.deny guardada en esta PC (' + d.VAS_DENY.split(',').length + ' entradas). Se usa al unir servidores nuevos con Safeguard.', 6000); };
       return;
     }
     if (d.AD_METHOD === 'centrify' || d.AD_METHOD === 'winbind') {
@@ -943,7 +1078,10 @@ if (typeof window !== 'undefined') (function () {
       el.innerHTML = '<div class="msg warn"><b>Este servidor no está unido al dominio</b>, por eso Linux todavía no conoce a los usuarios ni grupos de AD. ' +
         'Para que los usuarios del grupo puedan entrar hay que unirlo una vez (abajo). Unirlo <b>no</b> le da acceso a nadie: después se habilitan solo los grupos que indiques.</div>' +
         '<div class="msg ' + (miss ? 'info' : 'ok') + '">' + (miss ? 'Paquetes que faltan en el servidor: <b>' + esc(miss) + '</b>. Se instalan al unir (de los repositorios, o del ISO/DVD de instalación si la VM lo tiene conectado).' : 'Los paquetes necesarios (realmd, sssd, adcli) ya están instalados.') + '</div>';
+      if (d.VAS_INSTALLED === 'yes') el.innerHTML += '<div class="msg info">Safeguard (vasclnt) ya está instalado pero no unido: elegí "One Identity Safeguard (VAS)" abajo.</div>';
+      if (d.VAS_INSTALLED === 'yes') setJoinMethod('vas', false);
       $('joinBox').open = true;
+      if (!$('jName').value) $('jName').placeholder = (d.HOSTNAME || '').split('.')[0] || '(hostname del servidor)';
       return;
     }
     $('joinBox').open = false;
@@ -1034,6 +1172,7 @@ if (typeof window !== 'undefined') (function () {
   }
 
   async function adJoin() {
+    if (joinMethod() === 'vas') return adJoinVas();
     const dom = $('jDomain').value.trim(), user = $('jUser').value.trim(), pass = $('jPass').value;
     if (!dom || !user || !pass) { toast('Completá dominio, usuario y contraseña de AD.'); return; }
     const groups = adGroups(), acc = adAccess();
@@ -1098,7 +1237,11 @@ if (typeof window !== 'undefined') (function () {
         code = LCT.adCommands({ groups: adGroups(), domain: $('adDomain').value.trim(), access: adAccess(), gid: $('adGid').value.trim() });
       } else if (task === 'join') {
         title = 'Unir al dominio';
-        code = LCT.joinCommands(dk, { domain: $('jDomain').value.trim(), user: $('jUser').value.trim(), ou: $('jOu').value.trim(), idmap: $('jIdmap').checked,
+        if (joinMethod() === 'vas') {
+          code = LCT.joinCommandsVas({ domain: $('jDomain').value.trim(), user: $('jUser').value.trim(), ou: $('jOu').value.trim(), name: $('jName').value.trim(), force: $('jForce').checked,
+            kind: LCT.distro(dk).pkg === 'apt' ? 'deb' : 'rpm', groups: adGroups(), access: adAccess(), deny: $('jDeny').value });
+          title = 'Unir al dominio (Safeguard / VAS)';
+        } else code = LCT.joinCommands(dk, { domain: $('jDomain').value.trim(), user: $('jUser').value.trim(), ou: $('jOu').value.trim(), idmap: $('jIdmap').checked,
           shortnames: $('jShort').checked, groups: adGroups(), access: adAccess(), proxy: LCT.normalizeProxy($('pxUrl').value).url, noProxy: $('pxNo').value.trim() });
       } else if (task === 'inspect') {
         title = 'Ver configuración de AD (solo lectura)';
@@ -1200,6 +1343,12 @@ if (typeof window !== 'undefined') (function () {
     $('btnAdAdd').onclick = () => withBusy($('btnAdAdd'), adAdd);
     $('btnAdCommands').onclick = () => showConsole('ad');
     $('btnJoin').onclick = () => withBusy($('btnJoin'), adJoin);
+    document.querySelectorAll('input[name="jMethod"]').forEach((r) => r.addEventListener('change', () => setJoinMethod(r.value, true)));
+    $('btnSasPick').onclick = () => withBusy($('btnSasPick'), sasPick);
+    $('btnSasFind').onclick = () => withBusy($('btnSasFind'), () => sasFind(false));
+    $('jSasFolder').addEventListener('change', saveSasSettings);
+    $('jDeny').addEventListener('change', saveSasSettings);
+    $('jDeny').addEventListener('input', updateDenyCount);
     $('btnJoinCommands').onclick = () => showConsole('join');
     $('adStatus').addEventListener('click', (e) => { const b = e.target.closest('[data-rm]'); if (b) withBusy(null, () => adRemove(b.dataset.rm)); });
     ['adGroup', 'adDomain', 'adGid', 'jDomain', 'jUser', 'jOu'].forEach((id) => $(id).addEventListener('input', () => { if (!$('tab-console').classList.contains('hidden')) renderConsole(); }));

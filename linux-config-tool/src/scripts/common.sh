@@ -11,12 +11,13 @@ lct_fail() { echo "LCT_ERROR=$*"; exit 1; }
 
 lct_os() {
   if [ -r /etc/os-release ]; then
-    # shellcheck disable=SC1091
-    . /etc/os-release
-    LCT_OS_ID=${ID:-unknown}
-    LCT_OS_LIKE=${ID_LIKE:-}
-    LCT_OS_NAME=${PRETTY_NAME:-$ID}
-    LCT_OS_VERSION=${VERSION_ID:-}
+    # Se lee en un subshell para no pisar variables del script (os-release define NAME, VERSION, ID...)
+    eval "$(
+      # shellcheck disable=SC1091
+      . /etc/os-release
+      printf 'LCT_OS_ID=%q\nLCT_OS_LIKE=%q\nLCT_OS_NAME=%q\nLCT_OS_VERSION=%q\nLCT_OS_CODENAME=%q\n' \
+        "${ID:-unknown}" "${ID_LIKE:-}" "${PRETTY_NAME:-${ID:-unknown}}" "${VERSION_ID:-}" "${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
+    )"
   elif [ -r /etc/redhat-release ]; then
     LCT_OS_ID=rhel; LCT_OS_LIKE=rhel; LCT_OS_NAME=$(cat /etc/redhat-release); LCT_OS_VERSION=$(sed -E 's/[^0-9]*([0-9]+(\.[0-9]+)?).*/\1/' /etc/redhat-release)
   else

@@ -89,9 +89,13 @@ elif lct_has adinfo && adinfo -d >/dev/null 2>&1; then
 elif lct_has wbinfo && wbinfo -t >/dev/null 2>&1; then
   ad_method=winbind; ad_domain=$(wbinfo --own-domain 2>/dev/null)
 fi
-if [ "$ad_method" = vas ] && [ -f /etc/opt/quest/vas/users.allow ]; then
-  echo "VAS_ALLOW=$(grep -vE '^[[:space:]]*(#|$)' /etc/opt/quest/vas/users.allow | paste -sd, -)"
+if [ "$ad_method" = vas ]; then
+  [ -f /etc/opt/quest/vas/users.allow ] && echo "VAS_ALLOW=$(grep -vE '^[[:space:]]*(#|$)' /etc/opt/quest/vas/users.allow | paste -sd, -)"
+  [ -f /etc/opt/quest/vas/users.deny ] && echo "VAS_DENY=$(grep -vE '^[[:space:]]*(#|$)' /etc/opt/quest/vas/users.deny | paste -sd, -)"
+  echo "VAS_VERSION=$(/opt/quest/bin/vastool -v 2>/dev/null | head -n1 | sed 's/^vastool: *//')"
 fi
+[ -x /opt/quest/bin/vastool ] && echo "VAS_INSTALLED=yes"
+echo "ARCH=$(uname -m)"
 echo "AD_METHOD=$ad_method"
 echo "AD_DOMAIN=$ad_domain"
 miss=""

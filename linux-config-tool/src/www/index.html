@@ -139,18 +139,42 @@
 
       <details class="join" id="joinBox">
         <summary>Unir el servidor al dominio (si todavía no lo está)</summary>
+        <div class="access-levels jm" role="radiogroup">
+          <label class="level"><input type="radio" name="jMethod" value="vas"><span><b>One Identity Safeguard (VAS)</b><small>vasclnt + vastool, users.allow / users.deny. El instalador se copia desde esta PC (no necesita internet).</small></span></label>
+          <label class="level"><input type="radio" name="jMethod" value="sssd" checked><span><b>SSSD / realm</b><small>Incluido en Linux (realmd, sssd, adcli). Los paquetes se bajan de los repositorios.</small></span></label>
+        </div>
         <div class="grid">
           <label>Dominio<input id="jDomain" placeholder="empresa.local"></label>
           <label>Usuario de AD con permiso para unir equipos<input id="jUser" placeholder="admin.linux" autocomplete="off"></label>
           <label>Contraseña<span class="pw-wrap"><input id="jPass" type="password" autocomplete="off"><button type="button" class="eye" data-for="jPass">👁</button></span></label>
           <label>OU de destino (opcional)<input id="jOu" placeholder="OU=Linux,OU=Servers,DC=empresa,DC=local"></label>
         </div>
-        <label class="check"><input type="checkbox" id="jInstall" checked> Instalar los paquetes necesarios (realmd, sssd, adcli...)</label>
-        <label class="check"><input type="checkbox" id="jIdmap" checked> Usar los UID/GID unix definidos en AD (recomendado si sus grupos tienen GID unix)</label>
-        <label class="check" id="jPxRow"><input type="checkbox" id="jPxSave" checked> <span id="jPxLabel">Usar el proxy del paso 1 y dejarlo configurado en el servidor</span></label>
-        <label class="check"><input type="checkbox" id="jShort" checked> Login con nombre corto: <span class="mono">usuario</span> en vez de <span class="mono">usuario@dominio</span></label>
+        <div id="jVasBox" class="hidden">
+          <div class="grid sas-grid">
+            <label>Carpeta del instalador de Safeguard en esta PC (se recuerda)
+              <span class="pw-wrap"><input id="jSasFolder" placeholder="\\servidor\software\Safeguard\6.1  o  C:\Instaladores\SAS"></span></label>
+            <label>Nombre de equipo en AD<input id="jName" placeholder="(hostname del servidor)"></label>
+          </div>
+          <div class="actions">
+            <button class="small" id="btnSasPick">Elegir carpeta...</button>
+            <button class="small" id="btnSasFind">Buscar paquetes</button>
+            <span id="jSasFound" class="hint"></span>
+          </div>
+          <label class="check"><input type="checkbox" id="jForce"> Reemplazar cuenta de equipo existente en AD (<span class="mono">vastool join -f</span>, solo si es este mismo servidor reinstalado)</label>
+          <details class="sas-tpl">
+            <summary>Plantilla de <span class="mono">users.deny</span> <span id="jDenyCount" class="hint"></span></summary>
+            <p class="hint">Se escribe en el servidor al unirlo. Para copiarla de un servidor que ya funciona: conectate a ese servidor y en el estado de AD apretá <b>"Usar su users.deny como plantilla"</b>. Se guarda solo en esta PC.</p>
+            <textarea id="jDeny" rows="6" class="mono" placeholder="@dominio1.local&#10;@dominio2.local"></textarea>
+          </details>
+        </div>
+        <div id="jSssdBox">
+          <label class="check"><input type="checkbox" id="jInstall" checked> Instalar los paquetes necesarios (realmd, sssd, adcli...)</label>
+          <label class="check"><input type="checkbox" id="jIdmap" checked> Usar los UID/GID unix definidos en AD (recomendado si sus grupos tienen GID unix)</label>
+          <label class="check" id="jPxRow"><input type="checkbox" id="jPxSave" checked> <span id="jPxLabel">Usar el proxy del paso 1 y dejarlo configurado en el servidor</span></label>
+          <label class="check"><input type="checkbox" id="jShort" checked> Login con nombre corto: <span class="mono">usuario</span> en vez de <span class="mono">usuario@dominio</span></label>
+        </div>
         <p class="hint">Unir el servidor crea su cuenta de equipo en AD y le permite consultar usuarios y grupos; por sí solo <b>no da acceso a nadie</b>. Al terminar se habilitan automáticamente los grupos que cargaste arriba.
-        Requisitos: DNS del servidor apuntando a los controladores de dominio, hora sincronizada y un usuario con permiso para crear equipos en la OU. Si el servidor no tiene repositorios, conectá el ISO/DVD de instalación a la VM y se usa para instalar los paquetes.</p>
+        Requisitos: DNS del servidor apuntando a los controladores de dominio, hora sincronizada y un usuario con permiso para crear equipos en la OU.</p>
         <div class="actions">
           <button class="primary" id="btnJoin">Unir al dominio</button>
           <button id="btnJoinCommands">Ver comandos para consola</button>

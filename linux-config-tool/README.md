@@ -35,7 +35,12 @@ Requisitos: Windows 10/11 o Windows Server 2016+ (usa Windows PowerShell 5.1 y .
    - *Admin sin contraseña* → `NOPASSWD: ALL`
    - *Verificar grupo* muestra cómo lo ve Linux (`getent group`) y avisa si el GID no coincide con el de AD.
    - Si el GID no coincide porque SSSD genera los IDs solo, el botón *Usar UID/GID de AD* pone `ldap_id_mapping = False`.
-   - *Unir el servidor al dominio* (necesario una sola vez para que Linux conozca los usuarios y grupos de AD; por sí solo no da acceso a nadie):
+   - *Unir con One Identity Safeguard Authentication Services (VAS/QAS)* — si es el estándar de tu empresa:
+     - elegí la carpeta del instalador de Safeguard en tu PC (se recuerda); la app busca `vasclnt` y `vasgp` para la distro y arquitectura del servidor (.deb o .rpm), los copia por SSH e instala, sin necesitar internet;
+     - `vastool join` a la OU con el nombre de equipo, aplica las políticas de grupo (`vgptool apply`) y escribe `users.deny` desde una plantilla;
+     - la plantilla se toma de un servidor que ya funciona (botón *Usar su users.deny como plantilla*) y se guarda solo en tu PC;
+     - *Dar acceso* agrega el grupo a `/etc/opt/quest/vas/users.allow` y la regla sudo; el ✕ lo quita.
+   - *Unir el servidor al dominio con SSSD/realm* (necesario una sola vez para que Linux conozca los usuarios y grupos de AD; por sí solo no da acceso a nadie):
      - instala solo los paquetes que falten (realmd, sssd, adcli, oddjob…). Si el servidor no tiene repositorios (RHEL sin registrar, sin internet/proxy), usa el **ISO/DVD de instalación** conectado a la VM;
      - `realm join` en la OU indicada, home automático, UID/GID de AD y login con nombre corto (opcional);
      - deja el login cerrado y **habilita automáticamente los grupos cargados arriba** con el nivel elegido;

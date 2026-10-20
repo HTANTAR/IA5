@@ -13,6 +13,29 @@ SHORTNAMES=${LCT_SHORTNAMES:-0}
 PROXY_SAVE=${LCT_PROXY_SAVE:-0}
 SSSD=/etc/sssd/sssd.conf
 PKGLOG=/var/lib/linuxconfigtool/paquetes.log
+VAS=/opt/quest/bin/vastool
+VASDIR=/etc/opt/quest/vas
+
+# Servidor integrado con One Identity Safeguard Authentication Services (VAS/QAS)?
+is_vas() { [ -x "$VAS" ] && "$VAS" info domain >/dev/null 2>&1; }
+
+# users.allow / users.deny de VAS: agrega o quita una linea (sin distinguir mayusculas)
+vas_list_add() {
+  local f=$1 entry=$2
+  mkdir -p "$VASDIR"; [ -f "$f" ] || { : > "$f"; chmod 644 "$f"; }
+  if grep -vE '^[[:space:]]*#' "$f" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -qixF "$entry"; then return 0; fi
+  [ -f "$f.lct.bak" ] || cp -p "$f" "$f.lct.bak"
+  # asegurar salto de linea final
+  [ -s "$f" ] && [ "$(tail -c1 "$f" | od -An -c | tr -d ' ')" != '\n' ] && echo >> "$f"
+  echo "$entry" >> "$f"
+}
+vas_list_del() {
+  local f=$1 entry=$2 tmp
+  [ -f "$f" ] || return 0
+  tmp=$(mktemp)
+  awk -v e="$(echo "$entry" | tr '[:upper:]' '[:lower:]')" '{ l = tolower($0); gsub(/^[ \t]+|[ \t]+$/, "", l); n = l; sub(/^.*\\/, "", n); if (l == e || n == e) next; print }' "$f" > "$tmp" && cat "$tmp" > "$f"
+  rm -f "$tmp"
+}
 
 lct_require_root
 
@@ -82,7 +105,9 @@ check_gid() {
   else
     echo "GID_MATCH=no"
     idmap=$(awk -F= 'tolower($1) ~ /ldap_id_mapping/ {gsub(/[ \t]/,"",$2); print tolower($2)}' "$SSSD" 2>/dev/null | tail -n1)
-    if [ "${idmap:-true}" != "false" ]; then
+    if is_vas; then
+      echo "LCT_WARN=El GID que ve Linux ($gid) no coincide con el esperado ($EXPECTED_GID). Revise el atributo gidNumber del grupo en AD."
+    elif [ "${idmap:-true}" != "false" ]; then
       echo "LCT_WARN=El GID que ve Linux ($gid) no coincide con el GID de AD ($EXPECTED_GID): SSSD esta generando IDs automaticamente (ldap_id_mapping = True). Use 'Usar GID/UID de AD'."
     else
       echo "LCT_WARN=El GID que ve Linux ($gid) no coincide con el esperado ($EXPECTED_GID). Revise el atributo gidNumber del grupo en AD."
@@ -268,7 +293,7 @@ ensure_packages() {
 
 join_diagnose() {
   local f=$1
-  if grep -qiE 'Preauthentication failed|password|Couldn.t authenticate|Invalid credentials|KDC reply did not match|Client .* not found in Kerberos' "$f"; then
+  if grep -qiE 'Preauthentication failed|password|Couldn.t authenticate|Invalid credentials|KDC reply did not match|Client .* not found in Kerberos|Client not found|KRB5KDC_ERR_PREAUTH|account.*(locked|disabled)' "$f"; then
     echo "usuario o contrasena de AD incorrectos (o la cuenta esta bloqueada)."
   elif grep -qiE 'Insufficient access|Access denied|INSUFF_ACCESS|not have permission|Couldn.t create computer account' "$f"; then
     echo "el usuario de AD no tiene permiso para crear equipos en esa OU."
@@ -280,7 +305,7 @@ join_diagnose() {
     echo "faltan paquetes que pide realmd. Marca 'Instalar los paquetes necesarios'."
   elif grep -qiE 'Already joined|already a member' "$f"; then
     echo "el servidor ya esta unido a un dominio."
-  elif grep -qiE 'Cannot contact|Cannot find KDC|resolve|unreachable|timed out' "$f"; then
+  elif grep -qiE 'Cannot contact|Cannot find KDC|resolve|unreachable|timed out|Could not find (a )?domain controller|No domain controllers|LDAP server' "$f"; then
     echo "no se puede contactar a los controladores de dominio (DNS o firewall: puertos 53, 88, 389, 445, 464)."
   else
     echo "revisa el detalle debajo."
@@ -305,7 +330,12 @@ case "$ACTION" in
     print_group "$line"
     check_gid "$gid"
     # 1) Permitir login
-    if lct_has realm && [ -n "$(realm_domain)" ]; then
+    if is_vas; then
+      vas_list_add "$VASDIR/users.allow" "$name"
+      echo "Agregado a $VASDIR/users.allow"
+      out=$("$VAS" user checkaccess "$(echo "$line" | cut -d: -f4 | cut -d, -f1)" 2>/dev/null | head -n2 | tr '\n' ' ')
+      [ -n "$out" ] && echo "LCT_NOTE=Prueba con un miembro del grupo: $out"
+    elif lct_has realm && [ -n "$(realm_domain)" ]; then
       pol=$(realm list 2>/dev/null | awk -F': ' '/login-policy/{print $2; exit}')
       if [ "$pol" = "allow-realm-logins" ] || [ "$pol" = "allow-any-login" ]; then
         echo "LCT_NOTE=Antes TODOS los usuarios del dominio podian entrar ($pol). Desde ahora solo entran los grupos permitidos."
@@ -345,7 +375,10 @@ case "$ACTION" in
   remove)
     [ -n "$GROUP" ] || lct_fail "Indique el nombre del grupo."
     line=$(resolve_group "$GROUP"); name=${line%%:*}; [ -n "$name" ] || name=$GROUP
-    if lct_has realm && [ -n "$(realm_domain)" ]; then
+    if is_vas; then
+      vas_list_del "$VASDIR/users.allow" "$name"; [ "$name" != "$GROUP" ] && vas_list_del "$VASDIR/users.allow" "$GROUP"
+      echo "Quitado de $VASDIR/users.allow"
+    elif lct_has realm && [ -n "$(realm_domain)" ]; then
       realm permit -x -g "$name" 2>/dev/null || realm permit -x -g "$GROUP" 2>/dev/null || echo "Aviso: realm no tenia permitido ese grupo"
     elif [ -f "$SSSD" ]; then
       cur=$(awk -F= 'tolower($1) ~ /simple_allow_groups/ {sub(/^[ \t]*/,"",$2); print $2}' "$SSSD" | tail -n1)
@@ -445,6 +478,83 @@ case "$ACTION" in
       realm deny --all >/dev/null 2>&1 && lct_log "Login de dominio cerrado hasta que se habiliten grupos."
     fi
     echo "Servidor unido a $DOMAIN"
+    echo "LCT_OK=1"
+    ;;
+
+  sas-join)
+    # Instala Safeguard Authentication Services (paquetes subidos a LCT_SAS_DIR) y une el servidor con vastool
+    SASDIR=${LCT_SAS_DIR:-}
+    JOIN_NAME=${LCT_NAME:-$(hostname -s)}
+    ADPASS=$(printf '%s' "${LCT_ADPASS_B64:-}" | base64 -d 2>/dev/null)
+    [ -n "$DOMAIN" ] && [ -n "$ADUSER" ] || lct_fail "Faltan dominio o usuario de AD."
+    lct_os
+    mkdir -p "$(dirname "$PKGLOG")"; : > "$PKGLOG"
+    if [ -x "$VAS" ]; then
+      lct_log "Safeguard Authentication Services ya instalado: $("$VAS" -v 2>/dev/null | head -n1)"
+    else
+      [ -n "$SASDIR" ] && [ -d "$SASDIR" ] || lct_fail "No se recibieron los paquetes del instalador."
+      lct_log "Instalando $(cd "$SASDIR" && ls | paste -sd' ' -)..."
+      if ls "$SASDIR"/*.deb >/dev/null 2>&1; then
+        if ! dpkg -i "$SASDIR"/vasclnt*.deb >>"$PKGLOG" 2>&1; then
+          lct_proxy_env
+          apt-get -y -f install >>"$PKGLOG" 2>&1 || true
+        fi
+        ls "$SASDIR"/vasgp*.deb >/dev/null 2>&1 && { dpkg -i "$SASDIR"/vasgp*.deb >>"$PKGLOG" 2>&1 || true; }
+      else
+        rpm -Uvh --replacepkgs "$SASDIR"/vasclnt*.rpm >>"$PKGLOG" 2>&1 || { lct_proxy_env; { dnf -y install "$SASDIR"/vasclnt*.rpm || yum -y install "$SASDIR"/vasclnt*.rpm; } >>"$PKGLOG" 2>&1; }
+        ls "$SASDIR"/vasgp*.rpm >/dev/null 2>&1 && { rpm -Uvh --replacepkgs "$SASDIR"/vasgp*.rpm >>"$PKGLOG" 2>&1 || true; }
+      fi
+      if [ ! -x "$VAS" ]; then
+        tail -n 8 "$PKGLOG" | sed 's/^/LCT_DETAIL=/'
+        lct_fail "No se pudo instalar vasclnt."
+      fi
+      lct_log "Instalado: $("$VAS" -v 2>/dev/null | head -n1)"
+    fi
+    rm -rf "$SASDIR" 2>/dev/null
+    if is_vas; then
+      cur=$("$VAS" info domain 2>/dev/null | head -n1)
+      if [ "$(echo "$cur" | tr '[:upper:]' '[:lower:]')" = "$(echo "$DOMAIN" | tr '[:upper:]' '[:lower:]')" ]; then
+        echo "LCT_NOTE=El servidor ya estaba unido a $cur con Safeguard; se omite la union."
+      else
+        lct_fail "El servidor ya esta unido a otro dominio con Safeguard ($cur). Primero hay que sacarlo (vastool unjoin)."
+      fi
+    else
+      if lct_has timedatectl && [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "no" ]; then
+        echo "LCT_WARN=La hora del servidor no esta sincronizada (NTP). Kerberos falla si hay mas de 5 minutos de diferencia con el DC."
+      fi
+      lct_log "Uniendo $JOIN_NAME a $DOMAIN${OU:+ en $OU}..."
+      jargs=(-u "$ADUSER" -w "$ADPASS" join)
+      [ "${LCT_FORCE:-0}" = 1 ] && jargs+=(-f)
+      [ -n "$OU" ] && jargs+=(-c "$OU")
+      jargs+=(-n "$JOIN_NAME" "$DOMAIN")
+      jout=$(mktemp)
+      "$VAS" "${jargs[@]}" </dev/null >"$jout" 2>&1; rc=$?
+      if [ $rc -ne 0 ]; then
+        grep -vE '^[[:space:]]*$' "$jout" | tail -n 8 | sed 's/^/LCT_DETAIL=/'
+        if grep -qiE 'already exists|ya existe|object exists' "$jout"; then why="ya existe una cuenta de equipo $JOIN_NAME en AD. Si es este mismo servidor reinstalado, marca 'Reemplazar cuenta de equipo existente'."
+        else why=$(join_diagnose "$jout"); fi
+        rm -f "$jout"
+        lct_fail "vastool join fallo: $why"
+      fi
+      rm -f "$jout"
+      lct_log "Unido a $("$VAS" info domain 2>/dev/null | head -n1)."
+      if [ -x /opt/quest/bin/vgptool ]; then
+        /opt/quest/bin/vgptool apply >/dev/null 2>&1 && lct_log "Politicas de grupo (vasgp) aplicadas."
+      fi
+    fi
+    # users.deny segun la plantilla (bloquea al resto de los usuarios de esos dominios)
+    if [ -n "${LCT_SAS_DENY_B64:-}" ]; then
+      deny=$(printf '%s' "$LCT_SAS_DENY_B64" | base64 -d 2>/dev/null)
+      if [ -n "$deny" ]; then
+        [ -f "$VASDIR/users.deny" ] && [ ! -f "$VASDIR/users.deny.lct.bak" ] && cp -p "$VASDIR/users.deny" "$VASDIR/users.deny.lct.bak"
+        printf '%s\n' "$deny" | sed 's/\r$//' | grep -vE '^[[:space:]]*$' > "$VASDIR/users.deny"; chmod 644 "$VASDIR/users.deny"
+        lct_log "users.deny escrito ($(wc -l < "$VASDIR/users.deny") entradas)."
+      fi
+    fi
+    if [ ! -s "$VASDIR/users.allow" ]; then
+      echo "LCT_NOTE=Todavia no hay grupos en users.allow: se agregan a continuacion."
+    fi
+    echo "Servidor unido a $DOMAIN con Safeguard Authentication Services"
     echo "LCT_OK=1"
     ;;
 

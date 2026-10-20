@@ -147,6 +147,42 @@ function Invoke-Api($ctx, [string]$path, [string]$method) {
             $r = [Lct.NetDiag]::Test($px, [string[]]$tg, [int](Get-Prop $b 'timeoutMs' 8000))
             Send-Json $ctx $r 200
         }
+        '/api/sas/find' {
+            $b = Read-Body $ctx | ConvertFrom-Json
+            $r = [Lct.Files]::FindSasPackages([string](Get-Prop $b 'folder' ''), [string](Get-Prop $b 'kind' 'deb'), [string](Get-Prop $b 'arch' 'x86_64'))
+            Send-Json $ctx $r 200
+        }
+        '/api/sas/pick' {
+            $b = Read-Body $ctx | ConvertFrom-Json
+            $start = [string](Get-Prop $b 'start' '')
+            try {
+                Add-Type -AssemblyName System.Windows.Forms
+                $owner = New-Object System.Windows.Forms.Form
+                $owner.TopMost = $true; $owner.ShowInTaskbar = $false; $owner.Opacity = 0
+                $owner.FormBorderStyle = 'None'; $owner.StartPosition = 'CenterScreen'; $owner.Width = 1; $owner.Height = 1
+                $owner.Show(); $owner.Activate()
+                $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+                $dlg.Description = 'Carpeta con el instalador de Safeguard Authentication Services (vasclnt / vasgp)'
+                $dlg.ShowNewFolderButton = $false
+                if ($start -and (Test-Path -LiteralPath $start)) { $dlg.SelectedPath = $start }
+                $res = $dlg.ShowDialog($owner)
+                $owner.Close(); $owner.Dispose()
+                if ($res -eq [System.Windows.Forms.DialogResult]::OK) { Send-Json $ctx @{ path = $dlg.SelectedPath } 200 }
+                else { Send-Json $ctx @{ path = '' } 200 }
+            } catch {
+                Send-Json $ctx @{ path = ''; error = $_.Exception.Message } 200
+            }
+        }
+        '/api/upload' {
+            $b = Read-Body $ctx | ConvertFrom-Json
+            $files = @()
+            foreach ($f in @(Get-Prop $b 'files' @())) { if ($f) { $files += [string]$f } }
+            $h = [string](Get-Prop $b 'host' '')
+            Write-AppLog ("{0}@{1}  ->  subir {2} archivo(s) a {3}" -f [string](Get-Prop $b 'user' ''), $h, $files.Count, [string](Get-Prop $b 'remoteDir' ''))
+            $r = [Lct.Ssh]::Upload($h, [int](Get-Prop $b 'port' 22), [string](Get-Prop $b 'user' ''), [string](Get-Prop $b 'password' ''), [string[]]$files, [string](Get-Prop $b 'remoteDir' '/tmp/lct-upload'))
+            if (-not $r.Ok) { Write-AppLog ("   ERROR: {0}" -f $r.ErrorMessage) }
+            Send-Json $ctx $r 200
+        }
         '/api/store' {
             if ($method -eq 'POST') {
                 $txt = Read-Body $ctx

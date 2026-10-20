@@ -32,6 +32,7 @@ if [ -x /opt/quest/bin/vastool ]; then
     echo "--- $f"; if [ -f "$f" ]; then clean "$f" || echo "(vacio)"; else echo "(no existe)"; fi
   done
   echo "--- /etc/opt/quest/vas/vas.conf"; clean /etc/opt/quest/vas/vas.conf | grep -viE 'password|secret'
+  echo "--- ultima union (lastjoin)"; cat /etc/opt/quest/vas/lastjoin 2>/dev/null | sed -E 's/(-w|--password)[[:space:]]+[^[:space:]]+/\1 ***/g'
   echo "--- archivos en /etc/opt/quest/vas"; ls -la /etc/opt/quest/vas/ 2>/dev/null
   if [ -x /opt/quest/bin/vgptool ]; then echo "--- politicas de grupo (vasgp)"; /opt/quest/bin/vgptool listgpt 2>&1 | head -n 15; fi
   echo "--- acceso de $(logname 2>/dev/null || echo "${SUDO_USER:-root}")"; $V user checkaccess "$(logname 2>/dev/null || echo "${SUDO_USER:-root}")" 2>&1 | head -n 5

@@ -157,6 +157,80 @@ namespace Lct
             return r;
         }
 
+        // Sube archivos locales de esta PC al servidor (SFTP; si no hay SFTP, SCP).
+        public static UploadResult Upload(string host, int port, string user, string pass, string[] localPaths, string remoteDir)
+        {
+            UploadResult r = new UploadResult();
+            List<string> done = new List<string>();
+            try
+            {
+                if (localPaths == null || localPaths.Length == 0) { r.ErrorMessage = "No hay archivos para subir."; return r; }
+                foreach (string lp in localPaths)
+                {
+                    if (!File.Exists(lp)) { r.ErrorMessage = "No existe el archivo: " + lp; return r; }
+                }
+                ConnectionInfo ci = BuildInfo(host, port, user, pass, 15);
+                bool sftpOk = false;
+                try
+                {
+                    using (SftpClient sftp = new SftpClient(ci))
+                    {
+                        sftp.OperationTimeout = TimeSpan.FromMinutes(10);
+                        sftp.Connect();
+                        string acc = "";
+                        foreach (string part in remoteDir.Split('/'))
+                        {
+                            if (part.Length == 0) continue;
+                            acc += "/" + part;
+                            if (!sftp.Exists(acc)) sftp.CreateDirectory(acc);
+                        }
+                        foreach (string lp in localPaths)
+                        {
+                            string dest = remoteDir.TrimEnd('/') + "/" + Path.GetFileName(lp);
+                            using (FileStream fs = File.OpenRead(lp)) { sftp.UploadFile(fs, dest, true); }
+                            done.Add(dest);
+                        }
+                        sftp.Disconnect();
+                        sftpOk = true;
+                        r.Transfer = "sftp";
+                    }
+                }
+                catch (Exception)
+                {
+                    sftpOk = false;
+                }
+                if (!sftpOk)
+                {
+                    done.Clear();
+                    using (SshClient c = new SshClient(ci))
+                    {
+                        c.Connect();
+                        int rc;
+                        Exec(c, "mkdir -p '" + remoteDir.Replace("'", "") + "'", 30, out rc);
+                        c.Disconnect();
+                    }
+                    using (ScpClient scp = new ScpClient(ci))
+                    {
+                        scp.OperationTimeout = TimeSpan.FromMinutes(10);
+                        scp.Connect();
+                        foreach (string lp in localPaths)
+                        {
+                            string dest = remoteDir.TrimEnd('/') + "/" + Path.GetFileName(lp);
+                            using (FileStream fs = File.OpenRead(lp)) { scp.Upload(fs, dest); }
+                            done.Add(dest);
+                        }
+                        scp.Disconnect();
+                        r.Transfer = "scp";
+                    }
+                }
+                r.Ok = true;
+            }
+            catch (SshAuthenticationException) { r.ErrorMessage = "Usuario o contrasena incorrectos."; }
+            catch (Exception ex) { r.ErrorMessage = ex.GetType().Name + ": " + ex.Message; }
+            r.Remote = done.ToArray();
+            return r;
+        }
+
         // Devuelve true si el puerto TCP responde (para esperar a que el servidor aparezca con la IP nueva).
         public static bool Probe(string host, int port, int timeoutMs)
         {
@@ -175,6 +249,84 @@ namespace Lct
             {
                 return false;
             }
+        }
+    }
+
+    public class UploadResult
+    {
+        public bool Ok { get; set; }
+        public string ErrorMessage { get; set; }
+        public string Transfer { get; set; }
+        public string[] Remote { get; set; }
+    }
+
+    public class SasPackages
+    {
+        public string[] Files { get; set; }
+        public string Client { get; set; }
+        public string GroupPolicy { get; set; }
+        public string Error { get; set; }
+        public string[] Others { get; set; }
+    }
+
+    public static class Files
+    {
+        // Busca vasclnt / vasgp (Safeguard Authentication Services) en una carpeta (y subcarpetas).
+        // kind: deb | rpm ; arch: salida de "uname -m" del servidor (x86_64, aarch64...)
+        public static SasPackages FindSasPackages(string folder, string kind, string arch)
+        {
+            SasPackages r = new SasPackages();
+            r.Files = new string[0]; r.Others = new string[0];
+            if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)) { r.Error = "La carpeta no existe o no se puede abrir: " + folder; return r; }
+            string ext = kind == "rpm" ? ".rpm" : ".deb";
+            string a = (arch ?? "x86_64").ToLowerInvariant();
+            string[] archNames = (a == "aarch64" || a == "arm64") ? new string[] { "arm64", "aarch64" }
+                               : (a == "x86_64" || a == "amd64") ? new string[] { "amd64", "x86_64" }
+                               : new string[] { a };
+            List<string> all = new List<string>();
+            Collect(folder, ext, all, 0);
+            string clnt = Pick(all, "vasclnt", archNames);
+            string gp = Pick(all, "vasgp", archNames);
+            List<string> files = new List<string>();
+            if (clnt != null) files.Add(clnt);
+            if (gp != null) files.Add(gp);
+            r.Client = clnt; r.GroupPolicy = gp; r.Files = files.ToArray();
+            List<string> others = new List<string>();
+            foreach (string f in all) { string n = Path.GetFileName(f).ToLowerInvariant(); if (n.StartsWith("vas") && !files.Contains(f) && others.Count < 15) others.Add(f); }
+            r.Others = others.ToArray();
+            if (clnt == null) r.Error = "No encontre el paquete vasclnt (" + ext + ", " + string.Join("/", archNames) + ") en " + folder;
+            return r;
+        }
+
+        private static void Collect(string dir, string ext, List<string> acc, int depth)
+        {
+            if (depth > 6 || acc.Count > 2000) return;
+            try
+            {
+                foreach (string f in Directory.GetFiles(dir, "*" + ext))
+                {
+                    if (Path.GetFileName(f).StartsWith("vas", StringComparison.OrdinalIgnoreCase)) acc.Add(f);
+                }
+                foreach (string d in Directory.GetDirectories(dir)) Collect(d, ext, acc, depth + 1);
+            }
+            catch (Exception) { }
+        }
+
+        private static string Pick(List<string> all, string name, string[] archNames)
+        {
+            string best = null;
+            foreach (string f in all)
+            {
+                string n = Path.GetFileName(f).ToLowerInvariant();
+                if (!(n.StartsWith(name + "_") || n.StartsWith(name + "-"))) continue;
+                string rest = n.Substring(name.Length + 1);
+                if (rest.Length == 0 || !char.IsDigit(rest[0])) continue;   // vasclnts, vasclnt-devel, etc.
+                bool archOk = false;
+                foreach (string an in archNames) { if (n.Contains(an)) { archOk = true; break; } }
+                if (!archOk && !n.Contains("noarch") && !n.Contains("_all.")) continue;
+                if (best == null || string.CompareOrdinal(n, Path.GetFileName(best).ToLowerInvariant()) > 0) best = f;
+            }
+            return best;
         }
     }
 

@@ -39,8 +39,7 @@ px_probe() {
 
 # Lista "url tipo" de destinos a probar. tipo: os (repositorios del sistema operativo) | otro (otros repos configurados)
 px_targets() {
-  local code="${VERSION_CODENAME:-}" out
-  [ -z "$code" ] && [ -r /etc/os-release ] && code=$(. /etc/os-release; echo "${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}")
+  local code="${LCT_OS_CODENAME:-}" out
   out=$(
     if [ -d /etc/apt ]; then
       # Formato clasico: deb [opciones] URI suite componentes
