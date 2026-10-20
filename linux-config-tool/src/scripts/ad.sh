@@ -10,6 +10,7 @@ OU=${LCT_OU:-}
 INSTALL=${LCT_INSTALL:-0}
 IDMAP_OFF=${LCT_IDMAP_OFF:-0}
 SHORTNAMES=${LCT_SHORTNAMES:-0}
+PROXY_SAVE=${LCT_PROXY_SAVE:-0}
 SSSD=/etc/sssd/sssd.conf
 PKGLOG=/var/lib/linuxconfigtool/paquetes.log
 
@@ -123,10 +124,14 @@ pkg_install_list() {
   {
     echo "===== $(date '+%F %T') instalar: $* ${REPO_OPTS[*]}"
     case "$PM" in
-      dnf|yum) "$PM" -y "${REPO_OPTS[@]}" install "$@" ;;
+      dnf|yum)
+        if [ -n "$LCT_PROXY" ] && [ ${#REPO_OPTS[@]} -eq 0 ]; then "$PM" -y --setopt=proxy="$LCT_PROXY" install "$@"
+        else "$PM" -y "${REPO_OPTS[@]}" install "$@"; fi ;;
       apt)
-        if [ "$APT_UPDATED" = 0 ]; then apt-get -o DPkg::Lock::Timeout=180 update; APT_UPDATED=1; fi
-        DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y -q "$@" ;;
+        local ao=(-o DPkg::Lock::Timeout=180)
+        [ -n "$LCT_PROXY" ] && ao+=(-o "Acquire::http::Proxy=$LCT_PROXY" -o "Acquire::https::Proxy=$LCT_PROXY")
+        if [ "$APT_UPDATED" = 0 ]; then apt-get "${ao[@]}" update; APT_UPDATED=1; fi
+        DEBIAN_FRONTEND=noninteractive apt-get "${ao[@]}" install -y -q "$@" ;;
       zypper) zypper -n install "$@" ;;
     esac
   } >>"$PKGLOG" 2>&1
@@ -194,6 +199,16 @@ media_cleanup() {
 
 pkg_diagnose() {
   local f=$1
+  if grep -qiE '407|Proxy Authentication Required' "$f"; then
+    echo "el proxy pide usuario y contrasena. Escribilo como http://usuario:clave@proxy:puerto."
+    return
+  fi
+  local ph pp
+  read -r ph pp <<<"$(lct_proxy_hostport "${LCT_PROXY:-x}")"
+  if [ -n "$LCT_PROXY" ] && { grep -qiE 'Could not resolve proxy|proxy.*(refused|timed out)' "$f" || grep -qiE "(connect to|resolve) '?$ph'?(:$pp| port $pp)?" "$f"; }; then
+    echo "no se pudo conectar al proxy $(lct_proxy_mask "$LCT_PROXY"). Revisa direccion y puerto con el boton 'Probar' del proxy."
+    return
+  fi
   if grep -qiE 'not registered|no est. registrad|entitlement|consumer identity|subscription' "$f"; then
     echo "el servidor no esta registrado en Red Hat / Satellite, por eso no tiene repositorios. Registralo (subscription-manager) o conecta el ISO/DVD completo de instalacion a la VM y reintenta."
   elif grep -qiE 'Could not resolve host|Temporary failure in name resolution|Name or service not known|resolve' "$f"; then
@@ -201,7 +216,11 @@ pkg_diagnose() {
   elif grep -qiE 'Could not get lock|Unable to acquire the dpkg|is held by process|waiting for process|another app is currently holding' "$f"; then
     echo "otro proceso esta instalando paquetes en este momento (apt/dnf/zypper bloqueado). Espera unos minutos y reintenta."
   elif grep -qiE 'Curl error|Failed to download metadata|Cannot download repomd|repomd.xml|Connection timed out|Failed to connect|Could not connect|Network is unreachable|No route to host|Cannot retrieve repository metadata|Failed to fetch|Unable to connect|Timeout was reached|proxy' "$f"; then
-    echo "el servidor no llega a los repositorios de paquetes (sin internet, sin proxy o firewall). Configura el proxy/Satellite o conecta el ISO/DVD de instalacion a la VM y reintenta."
+    if [ -n "$LCT_PROXY" ]; then
+      echo "el servidor no llega a los repositorios ni usando el proxy $(lct_proxy_mask "$LCT_PROXY"). Proba el proxy con el boton 'Probar' o conecta el ISO/DVD de instalacion a la VM."
+    else
+      echo "el servidor no llega a los repositorios de paquetes. Si sale a internet por proxy, cargalo en 'Proxy de internet' (paso 1) y reintenta; si no, conecta el ISO/DVD de instalacion a la VM."
+    fi
   elif grep -qiE 'no enabled repo|There are no enabled repositories|No repositories available|No repos defined' "$f"; then
     echo "no hay repositorios habilitados en el servidor. Conecta el ISO/DVD de instalacion a la VM y reintenta."
   elif grep -qiE 'No match for argument|Unable to locate package|not found in package names|No package .* available|has no installation candidate' "$f"; then
@@ -352,6 +371,11 @@ case "$ACTION" in
     ADPASS=$(printf '%s' "${LCT_ADPASS_B64:-}" | base64 -d 2>/dev/null)
     lct_os
     pkg_detect_pm
+    if [ -n "$LCT_PROXY" ]; then
+      lct_proxy_env
+      lct_log "Usando el proxy $(lct_proxy_mask "$LCT_PROXY")"
+      if [ "$PROXY_SAVE" = 1 ]; then lct_proxy_apply "$LCT_PROXY" "$LCT_NOPROXY"; fi
+    fi
     if [ "$INSTALL" = 1 ]; then
       ensure_packages || exit 1
     fi

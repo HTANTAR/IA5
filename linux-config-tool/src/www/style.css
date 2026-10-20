@@ -151,3 +151,16 @@ details.join[open] summary { margin-bottom: 12px; }
 .cmp { display: grid; grid-template-columns: auto 1fr 1fr; gap: 4px 12px; font-size: 13px; }
 .cmp .h { color: var(--muted); font-size: 12px; }
 .cmp .new { font-weight: 600; color: var(--accent); }
+
+.proxy-box { margin-top: 14px; padding: 12px 14px; border: 1px dashed var(--line); border-radius: 8px; background: var(--panel-2); }
+.proxy-box input { background: var(--panel); }
+.px-grid { grid-template-columns: 1.4fr 1fr; }
+@media (max-width: 700px) { .px-grid { grid-template-columns: 1fr; } }
+.px-actions { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; justify-content: space-between; margin-top: 8px; }
+.px-actions .check { margin: 0; }
+.px-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.opt { font-weight: 400; opacity: .8; }
+#pxCurrent { margin-top: 6px; }
+#pxResult:not(:empty) { margin-top: 8px; }
+.ok-t { color: var(--ok); font-weight: 600; }
+.err-t { color: var(--err); font-weight: 600; }

@@ -270,6 +270,11 @@ const LCT = (() => {
   function joinCommands(dk, p) {
     const d = distro(dk), dom = p.domain || 'empresa.local', user = p.user || 'usuario.admin';
     const L = ['# ===== Unir al dominio ' + dom + ' =====', '# ' + d.n, '# Ejecutar como root (sudo -i). Los DNS deben apuntar a los DC y la hora debe estar sincronizada.', ''];
+    if (p.proxy) {
+      L.push('# 0) Proxy para salir a internet (solo esta sesion; para dejarlo fijo usá "Configurar el proxy de internet")');
+      L.push('export http_proxy=' + shq(p.proxy) + ' https_proxy=' + shq(p.proxy) + (p.noProxy ? ' no_proxy=' + shq(p.noProxy) : ''));
+      L.push('');
+    }
     L.push('# 1) Paquetes');
     if (d.pkg === 'dnf' || d.pkg === 'yum') {
       L.push(d.pkg + ' -y install realmd sssd sssd-tools oddjob oddjob-mkhomedir adcli samba-common-tools krb5-workstation');
@@ -329,8 +334,73 @@ const LCT = (() => {
     return L.join('\n');
   }
 
+  // ---------------- proxy ----------------
+  // Normaliza "proxy:8080" -> "http://proxy:8080". Devuelve {url, error}
+  function normalizeProxy(v) {
+    v = String(v || '').trim();
+    if (!v) return { url: '' };
+    if (!/^[a-z]+:\/\//i.test(v)) v = 'http://' + v;
+    v = v.replace(/\/+$/, '');
+    const m = v.match(/^(https?|socks5h?):\/\/(?:([^\s@\/]+)@)?([A-Za-z0-9.-]+|\[[0-9a-fA-F:]+\])(?::(\d{1,5}))?$/);
+    if (!m) return { url: v, error: 'Dirección de proxy inválida. Ejemplo: http://proxy.empresa.local:8080' };
+    if (!m[4]) return { url: v, error: 'Falta el puerto del proxy (ej: ' + v + ':8080).' };
+    if (+m[4] < 1 || +m[4] > 65535) return { url: v, error: 'Puerto de proxy inválido.' };
+    return { url: v, hasAuth: !!m[2], host: m[3], port: m[4] };
+  }
+  const stripProxyAuth = (u) => String(u || '').replace(/(\/\/)[^@\/]+@/, '$1');
+  const maskProxy = (u) => String(u || '').replace(/(\/\/)[^:@\/]+:[^@\/]*@/, '$1***:***@');
+
+  // Interpreta un codigo HTTP de la prueba
+  function reachInfo(code, err) {
+    code = String(code || '000');
+    if (code === '000' || code === '0') return { ok: false, text: 'No llega' + (err ? ' — ' + err.replace(/^curl: \(\d+\)\s*/, '') : '') };
+    if (code === '407') return { ok: false, auth: true, text: 'El proxy pide usuario y contraseña (407)' };
+    if (/^50[234]$/.test(code)) return { ok: false, text: 'El proxy no llega al destino (' + code + ')' };
+    return { ok: true, text: 'Llega (HTTP ' + code + ')' };
+  }
+
+  function proxyCommands(dk, p) {
+    const d = distro(dk), u = p.url || 'http://proxy.empresa.local:8080', np = p.no || 'localhost,127.0.0.1';
+    const n = normalizeProxy(u), L = [];
+    L.push('# ===== Proxy de internet: ' + maskProxy(u) + ' =====');
+    L.push('# ' + d.n);
+    L.push('# Ejecutar como root (sudo -i)');
+    L.push('');
+    L.push('# 1) Usarlo ya, en esta sesion');
+    L.push('export http_proxy=' + shq(u) + ' https_proxy=' + shq(u) + ' no_proxy=' + shq(np));
+    L.push('export HTTP_PROXY="$http_proxy" HTTPS_PROXY="$https_proxy" NO_PROXY="$no_proxy"');
+    L.push('');
+    L.push('# 2) Probar (cualquier codigo HTTP distinto de 000 / 407 significa que el proxy funciona)');
+    const probe = { apt: 'http://archive.ubuntu.com/', dnf: 'https://cdn.redhat.com/', yum: 'https://cdn.redhat.com/', zypper: 'https://updates.suse.com/' }[d.pkg] || 'https://www.google.com/';
+    L.push("curl -sS -o /dev/null -w '%{http_code}\\n' -x \"$http_proxy\" " + probe);
+    L.push('');
+    L.push('# 3) Dejarlo fijo para todo el sistema (sesiones nuevas)');
+    L.push("sed -i -E '/^(export )?(http|https|ftp|no)_proxy=/Id' /etc/environment");
+    L.push("cat >> /etc/environment <<'EOF'");
+    ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY'].forEach((v) => L.push(v + '="' + u + '"'));
+    L.push('no_proxy="' + np + '"'); L.push('NO_PROXY="' + np + '"');
+    L.push('EOF');
+    L.push("echo 'Defaults env_keep += \"http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY\"' > /etc/sudoers.d/proxy && chmod 440 /etc/sudoers.d/proxy && visudo -cf /etc/sudoers.d/proxy");
+    L.push('');
+    const apt = () => { L.push('# apt'); L.push("cat > /etc/apt/apt.conf.d/95proxy <<'EOF'"); L.push('Acquire::http::Proxy "' + u + '";'); L.push('Acquire::https::Proxy "' + u + '";'); L.push('EOF'); L.push('apt-get update'); };
+    const dnf = (f, pm) => { L.push('# ' + pm); L.push("sed -i '/^proxy=/d' " + f + " && sed -i '/^\\[main\\]/a proxy=" + u.replace(/[&|\\]/g, '\\$&') + "' " + f); L.push(pm + ' makecache');
+      L.push('# Si se registra contra Red Hat (no Satellite):');
+      L.push('# subscription-manager config --server.proxy_hostname=' + (n.host || 'proxy') + ' --server.proxy_port=' + (n.port || '8080')); };
+    const zyp = () => { L.push('# SUSE'); L.push("sed -i -E 's|^PROXY_ENABLED=.*|PROXY_ENABLED=\"yes\"|; s|^HTTP_PROXY=.*|HTTP_PROXY=\"" + u + "\"|; s|^HTTPS_PROXY=.*|HTTPS_PROXY=\"" + u + "\"|; s|^NO_PROXY=.*|NO_PROXY=\"" + np + "\"|' /etc/sysconfig/proxy"); L.push('zypper refresh'); };
+    if (d.pkg === 'apt') apt();
+    else if (d.pkg === 'dnf') dnf('/etc/dnf/dnf.conf', 'dnf');
+    else if (d.pkg === 'yum') dnf('/etc/yum.conf', 'yum');
+    else if (d.pkg === 'zypper') zyp();
+    else { L.push('# Segun la distribucion:'); L.push('if [ -d /etc/apt/apt.conf.d ]; then'); apt(); L.push('fi');
+      L.push('if [ -f /etc/dnf/dnf.conf ]; then'); dnf('/etc/dnf/dnf.conf', 'dnf'); L.push('fi');
+      L.push('if [ -f /etc/sysconfig/proxy ]; then'); zyp(); L.push('fi'); }
+    if (n.hasAuth) { L.push(''); L.push('# ATENCION: la contraseña del proxy queda en texto plano en estos archivos.'); }
+    return L.join('\n');
+  }
+
   return { shq, isIp, ipToInt, intToIp, prefixToMask, maskToPrefix, networkOf, sameNet, isHostname, validateIp, parseDetect, parseKV,
-    header, assemble, DISTROS, distro, distroFromDetect, ipCommands, adCommands, joinCommands, idmapCommands, fqGroup, sudoEsc, fileSafe };
+    header, assemble, DISTROS, distro, distroFromDetect, ipCommands, adCommands, joinCommands, idmapCommands, fqGroup, sudoEsc, fileSafe,
+    normalizeProxy, stripProxyAuth, maskProxy, reachInfo, proxyCommands };
 })();
 
 if (typeof module !== 'undefined') { module.exports = LCT; }
@@ -444,6 +514,11 @@ if (typeof window !== 'undefined') (function () {
   // ---------- servidores guardados ----------
   async function loadStore() {
     try { const s = await api('/api/store'); state.store = s && s.servers ? s : { servers: [] }; } catch (e) { state.store = { servers: [] }; }
+    state.store.settings = state.store.settings || {};
+    const st = state.store.settings;
+    if (st.proxy && !$('pxUrl').value) { $('pxUrl').value = st.proxy; $('pxNo').value = st.noProxy || ''; }
+    $('pxDefault').checked = !!st.proxy;
+    updateProxyUi();
     renderServers();
   }
   async function saveStore() { try { await api('/api/store', JSON.stringify(state.store)); } catch (e) { toast('No se pudo guardar: ' + e.message); } }
@@ -463,8 +538,87 @@ if (typeof window !== 'undefined') (function () {
     const idx = state.store.servers.findIndex((s) => serverKey(s) === serverKey(c) || (extra && extra.oldHost && s.host === extra.oldHost && s.user === c.user));
     const rec = Object.assign(idx >= 0 ? state.store.servers[idx] : {}, { name: $('cName').value.trim() || (idx >= 0 ? state.store.servers[idx].name : ''), host: c.host, port: c.port, user: c.user, updated: new Date().toISOString() });
     if (state.det) rec.os = state.det.OS_NAME;
+    const px = LCT.normalizeProxy($('pxUrl').value);
+    rec.proxy = px.error ? '' : LCT.stripProxyAuth(px.url); rec.noProxy = $('pxNo').value.trim();
     if (idx >= 0) state.store.servers[idx] = rec; else state.store.servers.unshift(rec);
     saveStore(); renderServers();
+  }
+
+  // ---------- proxy ----------
+  function knownDomain() {
+    const d = state.det || {};
+    return ($('adDomain').value || $('jDomain').value || d.REALM_DOMAIN || d.AD_DOMAIN || (d.SEARCH || '').split(' ')[0] || '').trim();
+  }
+  function defaultNoProxy() { const dom = knownDomain(); return 'localhost,127.0.0.1' + (dom ? ',.' + dom : ''); }
+  // Devuelve {url, no} o null (y avisa) si es invalido. required=true exige que haya proxy.
+  function proxyVals(required) {
+    const n = LCT.normalizeProxy($('pxUrl').value);
+    if (n.error) { toast(n.error, 5000); $('pxUrl').classList.add('bad'); $('pxUrl').focus(); return null; }
+    if (required && !n.url) { toast('Escribí la dirección del proxy (ej: http://proxy.empresa.local:8080).', 5000); $('pxUrl').focus(); return null; }
+    if (n.url && (!$('pxNo').value.trim() || $('pxNo').value.trim() === 'localhost,127.0.0.1')) $('pxNo').value = defaultNoProxy();
+    return { url: n.url, no: $('pxNo').value.trim().replace(/\s+/g, ''), hasAuth: n.hasAuth };
+  }
+  function updateProxyUi() {
+    const n = LCT.normalizeProxy($('pxUrl').value);
+    $('pxUrl').classList.toggle('bad', !!($('pxUrl').value.trim() && n.error));
+    const has = !!n.url && !n.error;
+    $('jPxRow').classList.toggle('hidden', !has);
+    if (has) $('jPxLabel').innerHTML = 'Instalar los paquetes por el proxy <span class="mono">' + esc(LCT.maskProxy(n.url)) + '</span> y dejarlo configurado en el servidor';
+  }
+  function saveProxyDefault() {
+    const st = state.store.settings = state.store.settings || {};
+    if ($('pxDefault').checked) {
+      const n = LCT.normalizeProxy($('pxUrl').value);
+      if (n.error || !n.url) { $('pxDefault').checked = false; if (n.error) toast(n.error); else toast('Escribí primero la dirección del proxy.'); return; }
+      st.proxy = LCT.stripProxyAuth(n.url); st.noProxy = $('pxNo').value.trim();
+      if (n.hasAuth) toast('Guardado como predeterminado sin usuario/contraseña del proxy.', 5000); else toast('Proxy guardado como predeterminado.');
+    } else { delete st.proxy; delete st.noProxy; }
+    saveStore();
+  }
+  function renderProxyCurrent() {
+    const d = state.det; if (!d) return;
+    const cur = d.PROXY_CURRENT;
+    $('pxCurrent').innerHTML = cur ? 'Proxy configurado hoy en el servidor: <span class="mono">' + esc(cur) + '</span>' : 'El servidor no tiene proxy configurado.';
+    if (cur && !$('pxUrl').value.trim() && !cur.includes('***')) { $('pxUrl').value = cur; $('pxNo').value = d.PROXY_NO || ''; updateProxyUi(); }
+  }
+
+  async function proxyTest() {
+    const px = proxyVals(true); if (!px) return;
+    $('pxResult').innerHTML = msgs([{ level: 'info', text: 'Probando desde el servidor...' }]);
+    const res = await runRemote('Probar proxy ' + LCT.maskProxy(px.url), 'proxy', { LCT_ACTION: 'test', LCT_PROXY: px.url, LCT_NOPROXY: px.no }, { asRoot: false, timeout: 120 });
+    if (!res.ok) { $('pxResult').innerHTML = msgs([{ level: 'err', text: res.error }]); return; }
+    const rows = res.r.Output.split(/\r?\n/).filter((l) => l.startsWith('TEST|')).map((l) => {
+      const f = l.split('|'); return { url: f[1], d: LCT.reachInfo(f[2], f[3]), p: LCT.reachInfo(f[4], f[5]) };
+    });
+    const m = [], kv = res.kv;
+    if (kv.PX_DNS === 'fail') m.push({ level: 'err', text: 'El servidor no resuelve el nombre del proxy "' + kv.PX_HOST + '" (DNS). Probá con la IP del proxy o revisá los DNS del servidor.' });
+    else if (kv.PX_PORT === 'fail') m.push({ level: 'err', text: 'El servidor no puede conectarse al proxy ' + kv.PX_HOST + ' en ese puerto (puerto equivocado o firewall).' });
+    const anyP = rows.some((r) => r.p.ok), anyD = rows.some((r) => r.d.ok), auth = rows.some((r) => r.p.auth);
+    if (anyP) m.push({ level: 'ok', text: 'El proxy funciona: el servidor llega a internet a través de él. Ya podés instalar paquetes / unir al dominio, o dejarlo fijo con "Configurar en el servidor".' });
+    else if (auth) m.push({ level: 'err', text: 'El proxy pide usuario y contraseña. Escribilo así: http://usuario:clave@proxy:puerto' });
+    else if (anyD && !m.length) m.push({ level: 'warn', text: 'El servidor sale a internet directo, sin proxy; pero por el proxy no llega. Revisá la dirección.' });
+    else if (!m.length) m.push({ level: 'err', text: 'Ni directo ni por el proxy llega a los repositorios.' });
+    $('pxResult').innerHTML = msgs(m) + (rows.length ? '<table><thead><tr><th>Destino</th><th>Directo (sin proxy)</th><th>Por el proxy</th></tr></thead><tbody>' +
+      rows.map((r) => '<tr><td class="mono">' + esc(r.url) + '</td><td class="' + (r.d.ok ? 'ok-t' : 'err-t') + '">' + esc(r.d.text) + '</td><td class="' + (r.p.ok ? 'ok-t' : 'err-t') + '">' + esc(r.p.text) + '</td></tr>').join('') + '</tbody></table>' : '');
+  }
+  async function proxyApply() {
+    const px = proxyVals(true); if (!px) return;
+    const ok = await confirmBox('Configurar el proxy en el servidor',
+      '<p>Proxy: <b class="mono">' + esc(LCT.maskProxy(px.url)) + '</b><br>Sin proxy para: <span class="mono">' + esc(px.no) + '</span></p>' +
+      '<p class="hint">Se configura en /etc/environment, sudo, apt / dnf / yum / zypper (según la distro), subscription-manager si registra contra Red Hat, y snap. Se guarda backup y se puede quitar con "Quitar del servidor".</p>' +
+      (px.hasAuth ? '<div class="msg warn">La contraseña del proxy va a quedar en texto plano en esos archivos del servidor.</div>' : ''), 'Configurar');
+    if (!ok) return;
+    const res = await runRemote('Configurar proxy ' + LCT.maskProxy(px.url), 'proxy', { LCT_ACTION: 'apply', LCT_PROXY: px.url, LCT_NOPROXY: px.no }, { timeout: 120 });
+    const out = res.ok ? res.r.Output.split(/\r?\n/).filter((l) => /^Proxy /.test(l)).map((t) => ({ level: 'ok', text: t })) : [{ level: 'err', text: res.error }];
+    $('pxResult').innerHTML = msgs(out.concat(res.kv.notes.map((t) => ({ level: 'info', text: t }))));
+    if (res.ok) { try { await detect(true); } catch (e) { /* ignore */ } }
+  }
+  async function proxyRemove() {
+    const ok = await confirmBox('Quitar el proxy del servidor', '<p>Se quita la configuración de proxy que puso esta herramienta y se restaura la anterior.</p>', 'Quitar');
+    if (!ok) return;
+    const res = await runRemote('Quitar proxy', 'proxy', { LCT_ACTION: 'remove' }, { timeout: 120 });
+    $('pxResult').innerHTML = msgs([res.ok ? { level: 'ok', text: 'Proxy quitado del servidor.' } : { level: 'err', text: res.error }]);
+    if (res.ok) { try { await detect(true); } catch (e) { /* ignore */ } }
   }
 
   // ---------- conexion y deteccion ----------
@@ -483,7 +637,7 @@ if (typeof window !== 'undefined') (function () {
     state.connectedHost = conn().host;
     state.passwords[serverKey(conn())] = conn().password;
     chip(limited ? 'Conectado (sin sudo)' : 'Conectado', limited ? 'warn' : 'ok');
-    renderDetect(); renderAdStatus(); fillIfaces();
+    renderDetect(); renderAdStatus(); fillIfaces(); renderProxyCurrent();
     $('adDomain').value = $('adDomain').value || state.det.REALM_DOMAIN || state.det.AD_DOMAIN || '';
     $('jDomain').value = $('jDomain').value || state.det.REALM_DOMAIN || (state.det.SEARCH || '').split(' ')[0] || '';
     $('conDistro').value = LCT.distroFromDetect(state.det, ipIface());
@@ -751,15 +905,17 @@ if (typeof window !== 'undefined') (function () {
     const dom = $('jDomain').value.trim(), user = $('jUser').value.trim(), pass = $('jPass').value;
     if (!dom || !user || !pass) { toast('Completá dominio, usuario y contraseña de AD.'); return; }
     const groups = adGroups(), acc = adAccess();
+    const px = proxyVals(false); if (!px) return;
     const ok = await confirmBox('Unir al dominio', '<p>Servidor: <b>' + esc(conn().host) + '</b><br>Dominio: <b>' + esc(dom) + '</b><br>Usuario AD: <b>' + esc(user) + '</b>' +
-      ($('jOu').value ? '<br>OU: <b>' + esc($('jOu').value) + '</b>' : '') + '</p>' +
+      ($('jOu').value ? '<br>OU: <b>' + esc($('jOu').value) + '</b>' : '') + (px.url ? '<br>Proxy: <b class="mono">' + esc(LCT.maskProxy(px.url)) + '</b>' + ($('jPxSave').checked ? ' (queda configurado)' : ' (solo para instalar)') : '') + '</p>' +
       (groups.length ? '<div class="msg info">Al terminar se habilita: <b>' + esc(groups.join(', ')) + '</b> (' + esc(ACC_TXT[acc]) + ')</div>' : '<div class="msg warn">No cargaste ningún grupo arriba: después de unir nadie del dominio va a poder entrar hasta que agregues uno.</div>') +
       '<p class="hint">Puede tardar unos minutos si hay que instalar paquetes.</p>', 'Unir');
     if (!ok) return;
     $('adResult').innerHTML = '<div class="msg info">Uniendo al dominio... (si hay que instalar paquetes puede tardar varios minutos)</div>';
     const b64 = btoa(unescape(encodeURIComponent(pass)));
     const res = await runRemote('Unir al dominio ' + dom, 'ad', { LCT_ACTION: 'join', LCT_DOMAIN: dom, LCT_ADUSER: user, LCT_ADPASS_B64: b64, LCT_OU: $('jOu').value.trim(),
-      LCT_INSTALL: $('jInstall').checked ? '1' : '0', LCT_IDMAP_OFF: $('jIdmap').checked ? '1' : '0', LCT_SHORTNAMES: $('jShort').checked ? '1' : '0' }, { timeout: 1200 });
+      LCT_INSTALL: $('jInstall').checked ? '1' : '0', LCT_IDMAP_OFF: $('jIdmap').checked ? '1' : '0', LCT_SHORTNAMES: $('jShort').checked ? '1' : '0',
+      LCT_PROXY: px.url, LCT_NOPROXY: px.no, LCT_PROXY_SAVE: px.url && $('jPxSave').checked ? '1' : '0' }, { timeout: 1200 });
     $('jPass').value = '';
     let html = msgs([res.ok ? { level: 'ok', text: 'Servidor unido a ' + dom + '.' } : { level: 'err', text: res.error }]
       .concat((res.kv.warns || []).map((w) => ({ level: 'warn', text: w })), (res.kv.notes || []).map((w) => ({ level: 'info', text: w })))) + details(res.kv.details);
@@ -799,7 +955,10 @@ if (typeof window !== 'undefined') (function () {
       } else if (task === 'join') {
         title = 'Unir al dominio';
         code = LCT.joinCommands(dk, { domain: $('jDomain').value.trim(), user: $('jUser').value.trim(), ou: $('jOu').value.trim(), idmap: $('jIdmap').checked,
-          shortnames: $('jShort').checked, groups: adGroups(), access: adAccess() });
+          shortnames: $('jShort').checked, groups: adGroups(), access: adAccess(), proxy: LCT.normalizeProxy($('pxUrl').value).url, noProxy: $('pxNo').value.trim() });
+      } else if (task === 'proxy') {
+        title = 'Proxy de internet';
+        code = LCT.proxyCommands(dk, { url: LCT.normalizeProxy($('pxUrl').value).url, no: $('pxNo').value.trim() || defaultNoProxy() });
       } else {
         title = 'Usar UID/GID de AD';
         code = LCT.idmapCommands(false);
@@ -848,8 +1007,16 @@ if (typeof window !== 'undefined') (function () {
     $('btnConnect').onclick = () => withBusy($('btnConnect'), async () => { chip('Conectando...', 'busy'); await detect(false); upsertServer(); });
     $('btnSave').onclick = () => { if (!conn().host) { toast('Completá la IP del servidor.'); return; } upsertServer(); toast('Servidor guardado (sin contraseña).'); };
     $('btnNewServer').onclick = () => { ['cName', 'cHost', 'cUser', 'cPass'].forEach((id) => $(id).value = ''); $('cPort').value = 22; state.det = null; state.connectedHost = null;
+      const st = state.store.settings || {}; $('pxUrl').value = st.proxy || ''; $('pxNo').value = st.proxy ? (st.noProxy || '') : ''; $('pxResult').innerHTML = ''; $('pxCurrent').textContent = ''; updateProxyUi();
       $('detectBox').classList.add('hidden'); chip('Sin conectar'); renderServers(); $('cHost').focus(); };
     $('serverFilter').oninput = renderServers;
+    $('pxUrl').addEventListener('input', () => { updateProxyUi(); if (!$('tab-console').classList.contains('hidden')) renderConsole(); });
+    $('pxUrl').addEventListener('blur', () => { const n = LCT.normalizeProxy($('pxUrl').value); if (n.url && !n.error) { $('pxUrl').value = n.url; if (!$('pxNo').value.trim()) $('pxNo').value = defaultNoProxy(); } updateProxyUi(); if ($('pxDefault').checked) saveProxyDefault(); });
+    $('pxNo').addEventListener('change', () => { if ($('pxDefault').checked) saveProxyDefault(); });
+    $('pxDefault').addEventListener('change', saveProxyDefault);
+    $('btnPxTest').onclick = () => withBusy($('btnPxTest'), proxyTest);
+    $('btnPxApply').onclick = () => withBusy($('btnPxApply'), proxyApply);
+    $('btnPxRemove').onclick = () => withBusy($('btnPxRemove'), proxyRemove);
     $('serverList').onclick = async (e) => {
       const del = e.target.closest('[data-del]');
       if (del) { e.stopPropagation(); const s = state.store.servers[+del.dataset.del];
@@ -858,6 +1025,9 @@ if (typeof window !== 'undefined') (function () {
       const s = state.store.servers[+li.dataset.i];
       $('cName').value = s.name || ''; $('cHost').value = s.host; $('cPort').value = s.port || 22; $('cUser').value = s.user || '';
       $('cPass').value = state.passwords[serverKey(s)] || '';
+      const st = state.store.settings || {};
+      $('pxUrl').value = s.proxy || st.proxy || ''; $('pxNo').value = s.proxy ? (s.noProxy || '') : (st.noProxy || '');
+      $('pxResult').innerHTML = ''; $('pxCurrent').textContent = ''; updateProxyUi();
       state.det = null; state.connectedHost = null; $('detectBox').classList.add('hidden'); chip('Sin conectar'); renderServers();
       (s.user && !$('cPass').value ? $('cPass') : $('btnConnect')).focus();
     };

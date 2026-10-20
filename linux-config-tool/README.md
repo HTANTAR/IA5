@@ -16,6 +16,12 @@ Requisitos: Windows 10/11 o Windows Server 2016+ (usa Windows PowerShell 5.1 y .
 
 ## Cómo se usa
 
+**Proxy:** si los servidores salen a internet por proxy, cargalo en *Proxy de internet del servidor* (paso 1, ej. `http://proxy.empresa.local:8080`; con usuario: `http://usuario:clave@proxy:8080`) y marcá *Usar este proxy por defecto* para que quede para todos los servidores (se guarda sin la contraseña).
+- *Probar desde el servidor*: verifica DNS y puerto del proxy y si llega a los repositorios directo y por el proxy.
+- *Configurar en el servidor*: lo deja fijo en `/etc/environment`, sudo (`env_keep`), apt / dnf / yum / zypper, subscription-manager (si registra contra Red Hat) y snap, con backup. *Quitar del servidor* lo revierte.
+- Al unir al dominio, los paquetes se instalan por el proxy automáticamente (y opcionalmente queda configurado).
+- *Comandos para consola → Configurar el proxy de internet* da los mismos pasos para hacerlo a mano.
+
 1. **Servidor**: IP actual, usuario (root o un usuario con sudo) y contraseña → *Conectar y detectar*. Muestra sistema operativo, gestor de red, interfaces (DHCP o fija), gateway, DNS y estado de Active Directory.
 2. **IP fija**: elegí la interfaz, *Usar valores actuales* (para convertir DHCP en fija con la misma IP) o cargá una IP nueva, máscara, gateway y DNS → *Aplicar por SSH*.
    - Se hace backup en `/var/lib/linuxconfigtool/backup`.

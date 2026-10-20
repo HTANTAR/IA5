@@ -94,6 +94,16 @@ lct_has realm || miss="$miss realmd"
 { lct_has sssd || [ -x /usr/sbin/sssd ]; } || miss="$miss sssd"
 lct_has adcli || miss="$miss adcli"
 echo "AD_PKGS_MISSING=${miss# }"
+# Proxy configurado actualmente
+px=""
+if [ -d /etc/apt ]; then
+  px=$(grep -hsE '^[[:space:]]*Acquire::https?::Proxy[[:space:]]+"[^"]+"' /etc/apt/apt.conf /etc/apt/apt.conf.d/* | grep -v DIRECT | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+fi
+[ -z "$px" ] && px=$(awk -F= '/^[[:space:]]*proxy[[:space:]]*=/{sub(/^[^=]*=[[:space:]]*/,""); print; exit}' /etc/dnf/dnf.conf /etc/yum.conf 2>/dev/null)
+[ -z "$px" ] && grep -qs '^PROXY_ENABLED="yes"' /etc/sysconfig/proxy && px=$(sed -nE 's/^HTTP_PROXY="([^"]*)".*/\1/p' /etc/sysconfig/proxy | head -n1)
+[ -z "$px" ] && px=$(grep -hsiE '^[[:space:]]*(export[[:space:]]+)?https?_proxy[[:space:]]*=' /etc/environment /etc/profile.d/*.sh | head -n1 | sed -E 's/^[^=]*=[[:space:]]*//; s/^["'"'"']//; s/["'"'"';]*$//')
+echo "PROXY_CURRENT=$(lct_proxy_mask "$px")"
+echo "PROXY_NO=$(grep -hsiE '^[[:space:]]*(export[[:space:]]+)?no_proxy[[:space:]]*=' /etc/environment /etc/profile.d/*.sh | head -n1 | sed -E 's/^[^=]*=[[:space:]]*//; s/^["'"'"']//; s/["'"'"';]*$//')"
 for f in /etc/sudoers.d/*; do
   [ -f "$f" ] || continue
   grep -E '^[[:space:]]*%' "$f" 2>/dev/null | while IFS= read -r line; do echo "SUDO|$f|$line"; done

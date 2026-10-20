@@ -47,6 +47,22 @@
           <span class="pw-wrap"><input id="cPass" type="password" autocomplete="off"><button type="button" class="eye" data-for="cPass" title="Mostrar">👁</button></span>
         </label>
       </div>
+      <div class="proxy-box">
+        <div class="grid px-grid">
+          <label>Proxy de internet del servidor <span class="opt">(opcional)</span><input id="pxUrl" placeholder="http://proxy.empresa.local:8080" autocomplete="off"></label>
+          <label>Sin proxy para<input id="pxNo" placeholder="localhost,127.0.0.1,.empresa.local"></label>
+        </div>
+        <div class="px-actions">
+          <label class="check"><input type="checkbox" id="pxDefault"> Usar este proxy por defecto en todos los servidores</label>
+          <span class="px-btns">
+            <button class="small" id="btnPxTest" title="Prueba desde el servidor si llega a los repositorios con y sin proxy">Probar desde el servidor</button>
+            <button class="small" id="btnPxApply" title="Lo deja fijo: variables de entorno, sudo, apt / dnf / yum / zypper, subscription-manager y snap">Configurar en el servidor</button>
+            <button class="small danger" id="btnPxRemove">Quitar del servidor</button>
+          </span>
+        </div>
+        <div id="pxCurrent" class="hint"></div>
+        <div id="pxResult"></div>
+      </div>
       <div class="actions">
         <button class="primary" id="btnConnect">Conectar y detectar</button>
         <button id="btnSave">Guardar servidor</button>
@@ -129,6 +145,7 @@
         </div>
         <label class="check"><input type="checkbox" id="jInstall" checked> Instalar los paquetes necesarios (realmd, sssd, adcli...)</label>
         <label class="check"><input type="checkbox" id="jIdmap" checked> Usar los UID/GID unix definidos en AD (recomendado si sus grupos tienen GID unix)</label>
+        <label class="check" id="jPxRow"><input type="checkbox" id="jPxSave" checked> <span id="jPxLabel">Usar el proxy del paso 1 y dejarlo configurado en el servidor</span></label>
         <label class="check"><input type="checkbox" id="jShort" checked> Login con nombre corto: <span class="mono">usuario</span> en vez de <span class="mono">usuario@dominio</span></label>
         <p class="hint">Unir el servidor crea su cuenta de equipo en AD y le permite consultar usuarios y grupos; por sí solo <b>no da acceso a nadie</b>. Al terminar se habilitan automáticamente los grupos que cargaste arriba.
         Requisitos: DNS del servidor apuntando a los controladores de dominio, hora sincronizada y un usuario con permiso para crear equipos en la OU. Si el servidor no tiene repositorios, conectá el ISO/DVD de instalación a la VM y se usa para instalar los paquetes.</p>
@@ -150,6 +167,7 @@
           <option value="ad">Dar acceso a grupos AD</option>
           <option value="join">Unir al dominio</option>
           <option value="idmap">Usar UID/GID de AD (desactivar ID mapping)</option>
+          <option value="proxy">Configurar el proxy de internet</option>
         </select></label>
       </div>
       <div class="code-head">
