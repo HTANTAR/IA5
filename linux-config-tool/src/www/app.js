@@ -1217,6 +1217,16 @@ if (typeof window !== 'undefined') (function () {
     $('adResult').innerHTML = html;
   }
 
+  async function adCheck() {
+    const dom = $('jDomain').value.trim() || $('adDomain').value.trim();
+    if (!dom) { toast('Escribí el dominio.'); return; }
+    $('adResult').innerHTML = msgs([{ level: 'info', text: 'Verificando DNS y controladores de dominio de ' + dom + '...' }]);
+    const res = await runRemote('Probar DNS y DC de ' + dom, 'ad', { LCT_ACTION: 'ad-check', LCT_DOMAIN: dom }, { timeout: 90 });
+    const m = res.ok ? res.kv.notes.map((t) => ({ level: 'ok', text: t })) : [{ level: 'err', text: res.error }];
+    if (!res.ok) m.push({ level: 'info', text: 'Solución habitual: poner en el servidor los mismos DNS que usa un servidor que ya está unido (en ese servidor: cat /etc/resolv.conf). Se cambian en la pestaña IP fija: "Usar valores actuales", cambiar los DNS y "Aplicar por SSH". Si los DNS ya son los de AD y no llega a los DC, es firewall: pedí abrir los puertos 53, 88, 389 y 464 hacia los DC.' });
+    $('adResult').innerHTML = msgs(m) + details(res.kv.details);
+  }
+
   async function adInspect() {
     $('adResult').innerHTML = msgs([{ level: 'info', text: 'Leyendo la configuración de AD del servidor...' }]);
     const res = await runRemote('Ver configuración AD', 'inspect', {}, { timeout: 120 });
@@ -1354,6 +1364,7 @@ if (typeof window !== 'undefined') (function () {
     $('btnAdAdd').onclick = () => withBusy($('btnAdAdd'), adAdd);
     $('btnAdCommands').onclick = () => showConsole('ad');
     $('btnJoin').onclick = () => withBusy($('btnJoin'), adJoin);
+    $('btnAdCheck').onclick = () => withBusy($('btnAdCheck'), adCheck);
     document.querySelectorAll('input[name="jMethod"]').forEach((r) => r.addEventListener('change', () => setJoinMethod(r.value, true)));
     $('btnSasPick').onclick = () => withBusy($('btnSasPick'), sasPick);
     $('btnSasPickFile').onclick = () => withBusy($('btnSasPickFile'), sasPickFile);

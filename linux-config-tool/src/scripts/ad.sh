@@ -293,23 +293,86 @@ ensure_packages() {
 
 join_diagnose() {
   local f=$1
-  if grep -qiE 'Preauthentication failed|password|Couldn.t authenticate|Invalid credentials|KDC reply did not match|Client .* not found in Kerberos|Client not found|KRB5KDC_ERR_PREAUTH|account.*(locked|disabled)' "$f"; then
-    echo "usuario o contrasena de AD incorrectos (o la cuenta esta bloqueada)."
-  elif grep -qiE 'Insufficient access|Access denied|INSUFF_ACCESS|not have permission|Couldn.t create computer account' "$f"; then
-    echo "el usuario de AD no tiene permiso para crear equipos en esa OU."
-  elif grep -qiE 'No such object|Couldn.t find|OU.*not|The computer organizational unit is invalid|invalid.*ou' "$f"; then
-    echo "la OU no existe o esta mal escrita (formato OU=...,DC=...,DC=...)."
+  # El orden importa: si no hay DC alcanzable, tambien aparece "Could not authenticate".
+  if grep -qiE 'VAS_ERR_DNS|DNS record lookup failed|discover ANY domain controllers|KDC_UNREACH|unable to reach any KDC|Cannot find KDC|Cannot contact any KDC|Could not find (a )?domain controller|No domain controllers|Failed to discover|Couldn.t find realm|realm.*not found' "$f"; then
+    echo "el servidor no encuentra o no llega a los controladores de dominio (DNS del servidor que no son los de AD, o firewall: puertos 53, 88, 389, 464). Mira el chequeo de DNS y DC debajo."
   elif grep -qiE 'Clock skew|clock' "$f"; then
     echo "la hora del servidor difiere mas de 5 minutos con el controlador de dominio. Sincroniza NTP."
+  elif grep -qiE 'Preauthentication failed|KRB5KDC_ERR_PREAUTH|Invalid credentials|KDC reply did not match|Client .* not found in Kerberos|Client not found|password (has )?expired|wrong password|incorrect password|account.*(locked|disabled)' "$f"; then
+    echo "usuario o contrasena de AD incorrectos (o la cuenta esta bloqueada / con la clave vencida)."
+  elif grep -qiE 'Insufficient access|Access denied|INSUFF_ACCESS|not have permission|Couldn.t create computer account|Could not create computer' "$f"; then
+    echo "el usuario de AD no tiene permiso para crear o modificar equipos en esa OU."
+  elif grep -qiE 'already exists|ya existe|object exists' "$f"; then
+    echo "ya existe en AD una cuenta de equipo con ese nombre."
+  elif grep -qiE 'No such object|organizational unit is invalid|invalid (container|OU)|container.*(not found|does not exist)|OU=.*(not found|does not exist)' "$f"; then
+    echo "la OU no existe o esta mal escrita (formato OU=...,OU=...,DC=...,DC=...)."
   elif grep -qiE 'Necessary packages are not installed|packagekit' "$f"; then
     echo "faltan paquetes que pide realmd. Marca 'Instalar los paquetes necesarios'."
   elif grep -qiE 'Already joined|already a member' "$f"; then
     echo "el servidor ya esta unido a un dominio."
-  elif grep -qiE 'Cannot contact|Cannot find KDC|resolve|unreachable|timed out|Could not find (a )?domain controller|No domain controllers|LDAP server' "$f"; then
-    echo "no se puede contactar a los controladores de dominio (DNS o firewall: puertos 53, 88, 389, 445, 464)."
+  elif grep -qiE 'Cannot contact|unreachable|timed out|LDAP server|Connection refused' "$f"; then
+    echo "no se puede contactar a los controladores de dominio (DNS o firewall: puertos 53, 88, 389, 464)."
+  elif grep -qiE 'Could not authenticate|Couldn.t authenticate' "$f"; then
+    echo "no se pudo autenticar con el usuario de AD (clave, cuenta bloqueada o sin acceso al dominio)."
   else
     echo "revisa el detalle debajo."
   fi
+}
+
+# Consulta registros SRV con la herramienta que haya (dig, host, nslookup, resolvectl). Imprime "destino puerto".
+dns_srv() {
+  local n=$1
+  if lct_has dig; then
+    dig +short +time=3 +tries=1 SRV "$n" 2>/dev/null | awk 'NF>=4 {sub(/\.$/, "", $4); print $4, $3}'
+  elif lct_has host; then
+    host -W 3 -t SRV "$n" 2>/dev/null | awk '/has SRV record/ {t=$NF; sub(/\.$/, "", t); print t, $(NF-1)}'
+  elif lct_has nslookup; then
+    nslookup -timeout=3 -type=SRV "$n" 2>/dev/null | awk '/service =/ {t=$NF; sub(/\.$/, "", t); print t, $(NF-1)}'
+  elif lct_has resolvectl; then
+    resolvectl query -t SRV "$n" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="SRV") { t=$(i+4); sub(/\.$/, "", t); print t, $(i+3); break }}'
+  else
+    return 2
+  fi
+}
+
+server_dns() {
+  local d=""
+  lct_has resolvectl && d=$(resolvectl dns 2>/dev/null | awk -F': ' 'NF>1 {print $2}' | tr ' ' '\n' | grep -v '^$' | sort -u | paste -sd' ' -)
+  [ -z "$d" ] && d=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf 2>/dev/null | paste -sd' ' -)
+  echo "$d"
+}
+
+# Chequeo previo a la union: los DNS encuentran los DC del dominio y el servidor llega a ellos.
+# Devuelve 0 si esta bien (o si no se pudo verificar), 1 si hay un problema seguro (ya informado con LCT_DETAIL).
+ad_preflight() {
+  local dom=$1 dns srv dcs ok=0 dc ip p88 p389 n=0 rc
+  dns=$(server_dns)
+  echo "LCT_DETAIL=DNS que usa el servidor: ${dns:-ninguno}"
+  srv=$(dns_srv "_ldap._tcp.dc._msdcs.$dom"); rc=$?
+  if [ $rc -eq 2 ]; then
+    echo "LCT_DETAIL=(no hay dig/host/nslookup/resolvectl para verificar los registros SRV; se intenta igual)"
+    return 0
+  fi
+  [ -z "$srv" ] && srv=$(dns_srv "_ldap._tcp.$dom")
+  [ -z "$srv" ] && srv=$(dns_srv "_kerberos._tcp.$dom")
+  if [ -z "$srv" ]; then
+    echo "LCT_DETAIL=No hay registros SRV de $dom (_ldap._tcp.dc._msdcs.$dom): esos DNS no conocen el dominio de AD."
+    if getent hosts "$dom" >/dev/null 2>&1; then echo "LCT_DETAIL=(el nombre $dom resuelve a $(getent hosts "$dom" | awk '{print $1}' | head -n3 | paste -sd' ' -), pero sin registros SRV)"; fi
+    return 1
+  fi
+  dcs=$(echo "$srv" | awk '{print $1}' | awk '!s[tolower($0)]++' | head -n 4)
+  for dc in $dcs; do
+    n=$((n+1))
+    ip=$(getent hosts "$dc" | awk '{print $1; exit}')
+    if timeout 4 bash -c "exec 3<>/dev/tcp/$dc/88" 2>/dev/null; then p88=ok; else p88=NO; fi
+    if timeout 4 bash -c "exec 3<>/dev/tcp/$dc/389" 2>/dev/null; then p389=ok; else p389=NO; fi
+    echo "LCT_DETAIL=DC $dc (${ip:-sin IP}): kerberos 88 $p88, ldap 389 $p389"
+    [ "$p88" = ok ] && [ "$p389" = ok ] && ok=1
+  done
+  echo "LCT_DETAIL=Controladores de dominio encontrados por DNS: $(echo "$srv" | awk '{print $1}' | sort -u | wc -l)"
+  [ $ok = 1 ] && return 0
+  echo "LCT_DETAIL=Ningun DC respondio en los puertos 88 y 389 desde este servidor: hay un firewall entre la red del servidor y los DC."
+  return 1
 }
 
 case "$ACTION" in
@@ -416,6 +479,10 @@ case "$ACTION" in
     if lct_has timedatectl && [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "no" ]; then
       echo "LCT_WARN=La hora del servidor no esta sincronizada (NTP). Kerberos falla si hay mas de 5 minutos de diferencia con el DC."
     fi
+    lct_log "Verificando DNS y controladores de dominio de $DOMAIN..."
+    if ! ad_preflight "$DOMAIN"; then
+      lct_fail "El servidor no encuentra o no llega a los controladores de dominio de $DOMAIN. Sus DNS tienen que ser los de Active Directory (los mismos que usa un servidor que ya esta unido) y la red tiene que permitir los puertos 53, 88, 389 y 464 hacia los DC."
+    fi
     lct_log "Buscando el dominio $DOMAIN..."
     disc=$(realm discover "$DOMAIN" 2>&1) || {
       echo "$disc" | tail -n 5 | sed 's/^/LCT_DETAIL=/'
@@ -481,6 +548,16 @@ case "$ACTION" in
     echo "LCT_OK=1"
     ;;
 
+  ad-check)
+    [ -n "$DOMAIN" ] || lct_fail "Indique el dominio."
+    if ad_preflight "$DOMAIN"; then
+      echo "LCT_NOTE=El servidor encuentra y llega a los controladores de dominio de $DOMAIN."
+      echo "LCT_OK=1"
+    else
+      lct_fail "El servidor no encuentra o no llega a los controladores de dominio de $DOMAIN."
+    fi
+    ;;
+
   sas-join)
     # Instala Safeguard Authentication Services (paquetes subidos a LCT_SAS_DIR) y une el servidor con vastool
     SASDIR=${LCT_SAS_DIR:-}
@@ -528,6 +605,10 @@ case "$ACTION" in
     else
       if lct_has timedatectl && [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "no" ]; then
         echo "LCT_WARN=La hora del servidor no esta sincronizada (NTP). Kerberos falla si hay mas de 5 minutos de diferencia con el DC."
+      fi
+      lct_log "Verificando DNS y controladores de dominio de $DOMAIN..."
+      if ! ad_preflight "$DOMAIN"; then
+        lct_fail "El servidor no encuentra o no llega a los controladores de dominio de $DOMAIN. Sus DNS tienen que ser los de Active Directory (los mismos que usa un servidor que ya esta unido: cat /etc/resolv.conf en ese servidor; se cambian desde la pestana IP fija) y la red tiene que permitir los puertos 53, 88, 389 y 464 hacia los DC."
       fi
       lct_log "Uniendo $JOIN_NAME a $DOMAIN${OU:+ en $OU}..."
       jargs=(-u "$ADUSER" -w "$ADPASS" join)
