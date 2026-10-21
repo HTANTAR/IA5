@@ -121,7 +121,7 @@
 
       <h3 class="sub">Dar acceso a un grupo</h3>
       <div class="grid">
-        <label>Grupo(s) de AD<input id="adGroup" placeholder="GRP-Linux-Admins   (varios: separados por coma)"></label>
+        <label>Grupo(s) de AD de este servidor<input id="adGroup" placeholder="GRP-Linux-Admins   (varios: separados por coma)"></label>
         <label>Dominio<input id="adDomain" placeholder="empresa.local (se detecta solo)"></label>
         <label>GID unix esperado<input id="adGid" placeholder="opcional, ej: 50010"></label>
       </div>
@@ -161,7 +161,7 @@
             <button class="small" id="btnSasFind">Buscar paquetes</button>
             <span id="jSasFound" class="hint"></span>
           </div>
-          <label class="check"><input type="checkbox" id="jForce"> Reemplazar cuenta de equipo existente en AD (<span class="mono">vastool join -f</span>, solo si es este mismo servidor reinstalado)</label>
+          <label class="check"><input type="checkbox" id="jForce"> Ya existe en AD una cuenta de equipo con este nombre y es de este mismo servidor (reinstalado): reemplazarla. <span class="hint">Servidor nuevo: dejar sin marcar.</span></label>
           <details class="sas-tpl">
             <summary>Plantilla de <span class="mono">users.deny</span> <span id="jDenyCount" class="hint"></span></summary>
             <p class="hint">Se escribe en el servidor al unirlo. Para copiarla de un servidor que ya funciona: conectate a ese servidor y en el estado de AD apretá <b>"Usar su users.deny como plantilla"</b>. Se guarda solo en esta PC.</p>
