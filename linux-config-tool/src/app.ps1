@@ -173,6 +173,35 @@ function Invoke-Api($ctx, [string]$path, [string]$method) {
                 Send-Json $ctx @{ path = ''; error = $_.Exception.Message } 200
             }
         }
+        '/api/sas/pickfile' {
+            $b = Read-Body $ctx | ConvertFrom-Json
+            $start = [string](Get-Prop $b 'start' '')
+            try {
+                Add-Type -AssemblyName System.Windows.Forms
+                $owner = New-Object System.Windows.Forms.Form
+                $owner.TopMost = $true; $owner.ShowInTaskbar = $false; $owner.Opacity = 0
+                $owner.FormBorderStyle = 'None'; $owner.StartPosition = 'CenterScreen'; $owner.Width = 1; $owner.Height = 1
+                $owner.Show(); $owner.Activate()
+                $dlg = New-Object System.Windows.Forms.OpenFileDialog
+                $dlg.Title = 'Instalador de Safeguard Authentication Services (.tar, .tar.gz, .deb o .rpm)'
+                $dlg.Filter = 'Instalador (*.tar;*.tar.gz;*.tgz;*.deb;*.rpm)|*.tar;*.tar.gz;*.tgz;*.deb;*.rpm|Todos los archivos (*.*)|*.*'
+                if ($start) {
+                    $dir = $start
+                    if (Test-Path -LiteralPath $start -PathType Leaf) { $dir = Split-Path -Parent $start }
+                    if (Test-Path -LiteralPath $dir) { $dlg.InitialDirectory = $dir }
+                }
+                $res = $dlg.ShowDialog($owner)
+                $owner.Close(); $owner.Dispose()
+                if ($res -eq [System.Windows.Forms.DialogResult]::OK) {
+                    $p = $dlg.FileName
+                    # un .deb/.rpm suelto: se usa su carpeta
+                    if ($p -match '\.(deb|rpm)$') { $p = Split-Path -Parent $p }
+                    Send-Json $ctx @{ path = $p } 200
+                } else { Send-Json $ctx @{ path = '' } 200 }
+            } catch {
+                Send-Json $ctx @{ path = ''; error = $_.Exception.Message } 200
+            }
+        }
         '/api/upload' {
             $b = Read-Body $ctx | ConvertFrom-Json
             $files = @()

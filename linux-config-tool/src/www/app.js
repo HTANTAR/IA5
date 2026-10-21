@@ -712,17 +712,28 @@ if (typeof window !== 'undefined') (function () {
   }
   async function sasFind(quiet) {
     const folder = $('jSasFolder').value.trim();
-    if (!folder) { if (!quiet) toast('Elegí la carpeta del instalador de Safeguard.'); return null; }
+    if (!folder) { if (!quiet) toast('Elegí la carpeta o el archivo .tar del instalador de Safeguard.'); return null; }
     const kind = sasKind() || 'deb', arch = (state.det && state.det.ARCH) || 'x86_64';
+    $('jSasFound').innerHTML = (/\.(tar|tgz|gz)$/i.test(folder) ? 'Buscando dentro del .tar (la primera vez puede tardar un minuto)...' : 'Buscando...');
     let r;
     try { r = await api('/api/sas/find', { folder, kind, arch }); } catch (e) { $('jSasFound').textContent = e.message; return null; }
+    if (!sasKind() && !r.Error) toast('Conectá el servidor primero: según su distribución se usa el .deb o el .rpm (por ahora busqué .deb).', 6000);
     if (r.Error || !r.Files || !r.Files.length) {
       $('jSasFound').innerHTML = '<span class="err-t">' + esc(r.Error || 'No se encontraron paquetes') + '</span>' + (r.Others && r.Others.length ? '<br>Otros archivos vas*: ' + esc(r.Others.map((x) => x.split(/[\\/]/).pop()).join(', ')) : '');
       return null;
     }
     const names = r.Files.map((x) => x.split(/[\\/]/).pop());
-    $('jSasFound').innerHTML = '<span class="ok-t">Encontrados (' + kind + ', ' + esc(arch) + '):</span> <span class="mono">' + esc(names.join(', ')) + '</span>' + (r.GroupPolicy ? '' : ' <span class="hint">(sin vasgp: no se aplicarán políticas de grupo)</span>');
+    $('jSasFound').innerHTML = '<span class="ok-t">Encontrados (' + kind + ', ' + esc(arch) + '):</span> <span class="mono">' + esc(names.join(', ')) + '</span>' +
+      (r.FromArchive ? ' <span class="hint">(de ' + esc(r.FromArchive.split(/[\\/]/).pop()) + ')</span>' : '') +
+      (r.GroupPolicy ? '' : ' <span class="hint">(sin vasgp: no se aplicarán políticas de grupo)</span>') +
+      (r.License ? '<br><span class="ok-t">Licencia:</span> <span class="mono">' + esc(r.License.split(/[\\/]/).pop()) + '</span> <span class="hint">(se instala en el servidor)</span>' : '');
     return r;
+  }
+  async function sasPickFile() {
+    let r;
+    try { r = await api('/api/sas/pickfile', { start: $('jSasFolder').value.trim() }); } catch (e) { toast('No se pudo abrir el selector: ' + e.message); return; }
+    if (r.error) toast('No se pudo abrir el selector de archivos (' + r.error + '). Escribí la ruta a mano.', 6000);
+    if (r.path) { $('jSasFolder').value = r.path; saveSasSettings(); await sasFind(false); }
   }
   async function sasPick() {
     let r;
@@ -744,7 +755,7 @@ if (typeof window !== 'undefined') (function () {
     const ok = await confirmBox('Unir al dominio con Safeguard (VAS)',
       '<p>Servidor: <b>' + esc(d.HOSTNAME || conn().host) + '</b> (' + esc(d.OS_NAME || '') + ')<br>Dominio: <b>' + esc(dom) + '</b><br>Usuario AD: <b>' + esc(user) + '</b>' +
       ($('jOu').value ? '<br>OU: <b>' + esc($('jOu').value) + '</b>' : '') + '<br>Nombre de equipo: <b>' + esc(name || d.HOSTNAME || '') + '</b>' + ($('jForce').checked ? ' (reemplaza si existe)' : '') + '</p>' +
-      (pk ? '<p>Instalar: <span class="mono">' + esc(pk.Files.map((x) => x.split(/[\\/]/).pop()).join(', ')) + '</span></p>' : '<p>Safeguard ya está instalado en el servidor.</p>') +
+      (pk ? '<p>Instalar: <span class="mono">' + esc(pk.Files.map((x) => x.split(/[\\/]/).pop()).join(', ')) + '</span>' + (pk.License ? '<br>Licencia: <span class="mono">' + esc(pk.License.split(/[\\/]/).pop()) + '</span>' : '') + '</p>' : '<p>Safeguard ya está instalado en el servidor.</p>') +
       (deny ? '<p>users.deny: ' + deny.split('\n').length + ' entradas de la plantilla</p>' : '<div class="msg warn">Sin plantilla de users.deny: solo se usará users.allow.</div>') +
       (groups.length ? '<div class="msg info">Al terminar se habilita: <b>' + esc(groups.join(', ')) + '</b> (' + esc(ACC_TXT[acc]) + ')</div>' : '<div class="msg warn">No cargaste ningún grupo arriba.</div>'), 'Unir');
     if (!ok) return;
@@ -754,7 +765,7 @@ if (typeof window !== 'undefined') (function () {
     if (pk) {
       show(msgs([{ level: 'info', text: 'Copiando el instalador al servidor...' }]));
       const c = conn();
-      const up = await api('/api/upload', { host: c.host, port: c.port, user: c.user, password: c.password, files: pk.Files, remoteDir });
+      const up = await api('/api/upload', { host: c.host, port: c.port, user: c.user, password: c.password, files: pk.Files.concat(pk.License ? [pk.License] : []), remoteDir });
       addLog({ label: 'Subir instalador Safeguard', host: c.host, ok: !!up.Ok, r: { Ok: true, ExitCode: up.Ok ? 0 : 1, Output: (up.Remote || []).join('\n') + (up.ErrorMessage ? '\n' + up.ErrorMessage : '') } });
       if (!up.Ok) { html += msgs([{ level: 'err', text: 'No se pudo copiar el instalador: ' + up.ErrorMessage }]); show(); return; }
       html += msgs([{ level: 'ok', text: 'Instalador copiado (' + (up.Transfer || 'sftp') + ').' }]);
@@ -1345,6 +1356,7 @@ if (typeof window !== 'undefined') (function () {
     $('btnJoin').onclick = () => withBusy($('btnJoin'), adJoin);
     document.querySelectorAll('input[name="jMethod"]').forEach((r) => r.addEventListener('change', () => setJoinMethod(r.value, true)));
     $('btnSasPick').onclick = () => withBusy($('btnSasPick'), sasPick);
+    $('btnSasPickFile').onclick = () => withBusy($('btnSasPickFile'), sasPickFile);
     $('btnSasFind').onclick = () => withBusy($('btnSasFind'), () => sasFind(false));
     $('jSasFolder').addEventListener('change', saveSasSettings);
     $('jDeny').addEventListener('change', saveSasSettings);

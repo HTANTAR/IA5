@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -252,6 +253,36 @@ namespace Lct
         }
     }
 
+    // Ventana de lectura sobre otro stream (para recorrer un .tar dentro de otro .tar sin copiarlo)
+    public class SubStream : Stream
+    {
+        private readonly Stream inner; private long left; private readonly byte[] peek = new byte[2]; private int peekLen = 0, peekPos = 0;
+        public SubStream(Stream inner, long length) { this.inner = inner; this.left = length; }
+        public int PeekByte(int i)
+        {
+            while (peekLen <= i && left > 0) { int b = inner.ReadByte(); if (b < 0) break; peek[peekLen++] = (byte)b; left--; }
+            return i < peekLen ? peek[i] : -1;
+        }
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (peekPos < peekLen) { int n = 0; while (peekPos < peekLen && count > 0) { buffer[offset++] = peek[peekPos++]; count--; n++; } return n; }
+            if (left <= 0) return 0;
+            int k = inner.Read(buffer, offset, (int)Math.Min(count, left));
+            if (k > 0) left -= k;
+            return k;
+        }
+        public void SkipRest() { peekPos = peekLen; byte[] b = new byte[65536]; while (left > 0) { int k = inner.Read(b, 0, (int)Math.Min(b.Length, left)); if (k <= 0) break; left -= k; } }
+        public override bool CanRead { get { return true; } }
+        public override bool CanSeek { get { return false; } }
+        public override bool CanWrite { get { return false; } }
+        public override long Length { get { throw new NotSupportedException(); } }
+        public override long Position { get { throw new NotSupportedException(); } set { throw new NotSupportedException(); } }
+        public override void Flush() { }
+        public override long Seek(long o, SeekOrigin so) { throw new NotSupportedException(); }
+        public override void SetLength(long v) { throw new NotSupportedException(); }
+        public override void Write(byte[] b, int o, int c) { throw new NotSupportedException(); }
+    }
+
     public class UploadResult
     {
         public bool Ok { get; set; }
@@ -267,6 +298,8 @@ namespace Lct
         public string GroupPolicy { get; set; }
         public string Error { get; set; }
         public string[] Others { get; set; }
+        public string License { get; set; }      // archivo de licencia .dlv (si hay)
+        public string FromArchive { get; set; }  // .tar del que se extrajeron los paquetes
     }
 
     public static class Files
@@ -277,15 +310,51 @@ namespace Lct
         {
             SasPackages r = new SasPackages();
             r.Files = new string[0]; r.Others = new string[0];
-            if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)) { r.Error = "La carpeta no existe o no se puede abrir: " + folder; return r; }
+            if (string.IsNullOrEmpty(folder)) { r.Error = "Elegi la carpeta o el archivo .tar del instalador."; return r; }
+            folder = folder.Trim().Trim('"');
             string ext = kind == "rpm" ? ".rpm" : ".deb";
             string a = (arch ?? "x86_64").ToLowerInvariant();
             string[] archNames = (a == "aarch64" || a == "arm64") ? new string[] { "arm64", "aarch64" }
                                : (a == "x86_64" || a == "amd64") ? new string[] { "amd64", "x86_64" }
                                : new string[] { a };
+            string searchDir = folder;
+            List<string> tars = new List<string>();
+            if (File.Exists(folder))
+            {
+                if (!IsArchive(folder)) { r.Error = "El archivo elegido no es un .tar / .tar.gz / .tgz: " + folder; return r; }
+                tars.Add(folder);
+                searchDir = null;
+            }
+            else if (!Directory.Exists(folder)) { r.Error = "La carpeta no existe o no se puede abrir: " + folder; return r; }
+
             List<string> all = new List<string>();
-            Collect(folder, ext, all, 0);
+            if (searchDir != null) Collect(searchDir, ext, all, 0);
             string clnt = Pick(all, "vasclnt", archNames);
+            // Sin paquetes sueltos: buscar dentro de los .tar de la carpeta (hasta 1 nivel)
+            if (clnt == null && searchDir != null)
+            {
+                try
+                {
+                    foreach (string f in Directory.GetFiles(searchDir)) if (IsArchive(f)) tars.Add(f);
+                    foreach (string d in Directory.GetDirectories(searchDir))
+                        try { foreach (string f in Directory.GetFiles(d)) if (IsArchive(f)) tars.Add(f); } catch (Exception) { }
+                }
+                catch (Exception) { }
+            }
+            List<string> seen = new List<string>();
+            foreach (string tar in tars)
+            {
+                if (clnt != null) break;
+                try
+                {
+                    string cache = ExtractSasFromArchive(tar, ext, archNames, seen);
+                    List<string> got = new List<string>();
+                    Collect(cache, ext, got, 0);
+                    string c2 = Pick(got, "vasclnt", archNames);
+                    if (c2 != null) { all = got; clnt = c2; r.FromArchive = tar; }
+                }
+                catch (Exception ex) { seen.Add("(" + Path.GetFileName(tar) + ": " + ex.Message + ")"); }
+            }
             string gp = Pick(all, "vasgp", archNames);
             List<string> files = new List<string>();
             if (clnt != null) files.Add(clnt);
@@ -293,9 +362,176 @@ namespace Lct
             r.Client = clnt; r.GroupPolicy = gp; r.Files = files.ToArray();
             List<string> others = new List<string>();
             foreach (string f in all) { string n = Path.GetFileName(f).ToLowerInvariant(); if (n.StartsWith("vas") && !files.Contains(f) && others.Count < 15) others.Add(f); }
+            foreach (string sname in seen) if (others.Count < 25) others.Add(sname);
             r.Others = others.ToArray();
-            if (clnt == null) r.Error = "No encontre el paquete vasclnt (" + ext + ", " + string.Join("/", archNames) + ") en " + folder;
+            // Licencia: .dlv en la carpeta elegida o junto al .tar
+            string licDir = searchDir ?? Path.GetDirectoryName(folder);
+            if (r.FromArchive != null && searchDir == null) licDir = Path.GetDirectoryName(r.FromArchive);
+            try
+            {
+                if (licDir != null && Directory.Exists(licDir))
+                {
+                    string[] lic = Directory.GetFiles(licDir, "*.dlv");
+                    if (lic.Length > 0) { Array.Sort(lic); r.License = lic[lic.Length - 1]; }
+                }
+            }
+            catch (Exception) { }
+            if (clnt == null) r.Error = "No encontre el paquete vasclnt (" + ext + ", " + string.Join("/", archNames) + ") en " + folder + (tars.Count > 0 ? " (revise " + tars.Count + " archivo(s) .tar)" : "");
             return r;
+        }
+
+        private static bool IsArchive(string f)
+        {
+            string n = f.ToLowerInvariant();
+            return n.EndsWith(".tar") || n.EndsWith(".tar.gz") || n.EndsWith(".tgz");
+        }
+
+        // Extrae del .tar solo vasclnt / vasgp de la extension y arquitectura pedidas. Devuelve la carpeta de cache.
+        public static string ExtractSasFromArchive(string archive, string ext, string[] archNames, List<string> seen)
+        {
+            FileInfo fi = new FileInfo(archive);
+            string baseDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrEmpty(baseDir)) baseDir = Path.GetTempPath();
+            string key = System.Text.RegularExpressions.Regex.Replace(Path.GetFileName(archive), "[^A-Za-z0-9._-]", "_") + "-" + fi.Length + "-" + ext.TrimStart('.') + "-" + archNames[0];
+            string cache = Path.Combine(Path.Combine(Path.Combine(baseDir, "LinuxConfigTool"), "sas"), key);
+            string marker = Path.Combine(cache, ".done");
+            if (File.Exists(marker)) return cache;
+            if (Directory.Exists(cache)) { try { Directory.Delete(cache, true); } catch (Exception) { } }
+            Directory.CreateDirectory(cache);
+            using (FileStream fs = File.OpenRead(archive))
+            {
+                TarScan(OpenMaybeGzip(fs), cache, ext, archNames, seen, 0);
+            }
+            File.WriteAllText(marker, DateTime.Now.ToString("s"));
+            return cache;
+        }
+
+        private static Stream OpenMaybeGzip(Stream s)
+        {
+            BufferedStream bs = new BufferedStream(s, 1 << 16);
+            int b1 = bs.ReadByte(), b2 = bs.ReadByte();
+            bs.Seek(0, SeekOrigin.Begin);
+            if (b1 == 0x1f && b2 == 0x8b) return new GZipStream(bs, CompressionMode.Decompress);
+            return bs;
+        }
+
+        private static bool Wanted(string name, string ext, string[] archNames)
+        {
+            string n = name.ToLowerInvariant();
+            if (!n.EndsWith(ext)) return false;
+            if (!(n.StartsWith("vasclnt_") || n.StartsWith("vasclnt-") || n.StartsWith("vasgp_") || n.StartsWith("vasgp-"))) return false;
+            string rest = n.Substring(n.StartsWith("vasgp") ? 6 : 8);
+            if (rest.Length == 0 || !char.IsDigit(rest[0])) return false;
+            foreach (string an in archNames) if (n.Contains(an)) return true;
+            return n.Contains("noarch") || n.Contains("_all.");
+        }
+
+        private static long ParseOctal(byte[] h, int off, int len)
+        {
+            // GNU base-256 para tamanos grandes
+            if ((h[off] & 0x80) != 0) { long v = 0; for (int i = 1; i < len; i++) v = (v << 8) | h[off + i]; return v; }
+            long r = 0;
+            for (int i = off; i < off + len; i++)
+            {
+                byte c = h[i];
+                if (c == 0 || c == 32) { if (r > 0) break; else continue; }
+                if (c < '0' || c > '7') break;
+                r = r * 8 + (c - '0');
+            }
+            return r;
+        }
+
+        private static string CStr(byte[] h, int off, int len)
+        {
+            int end = off;
+            while (end < off + len && h[end] != 0) end++;
+            return Encoding.UTF8.GetString(h, off, end - off);
+        }
+
+        private static void ReadFully(Stream s, byte[] buf, int len)
+        {
+            int got = 0;
+            while (got < len) { int n = s.Read(buf, got, len - got); if (n <= 0) throw new EndOfStreamException("tar truncado"); got += n; }
+        }
+
+        private static void Skip(Stream s, long n)
+        {
+            byte[] buf = new byte[65536];
+            while (n > 0) { int k = s.Read(buf, 0, (int)Math.Min(buf.Length, n)); if (k <= 0) throw new EndOfStreamException("tar truncado"); n -= k; }
+        }
+
+        private static void TarScan(Stream s, string outDir, string ext, string[] archNames, List<string> seen, int depth)
+        {
+            byte[] h = new byte[512];
+            string longName = null;
+            while (true)
+            {
+                int got = 0;
+                while (got < 512) { int n = s.Read(h, got, 512 - got); if (n <= 0) break; got += n; }
+                if (got < 512) return;
+                bool zero = true;
+                for (int i = 0; i < 512; i++) if (h[i] != 0) { zero = false; break; }
+                if (zero) return;
+                string name = CStr(h, 0, 100);
+                string prefix = CStr(h, 345, 155);
+                if (prefix.Length > 0 && CStr(h, 257, 6).StartsWith("ustar")) name = prefix + "/" + name;
+                long size = ParseOctal(h, 124, 12);
+                char type = (char)h[156];
+                long padded = (size + 511) / 512 * 512;
+                if (type == 'L')
+                {
+                    byte[] nb = new byte[size]; ReadFully(s, nb, (int)size); Skip(s, padded - size);
+                    longName = Encoding.UTF8.GetString(nb).TrimEnd('\0'); continue;
+                }
+                if (type == 'x' || type == 'g')
+                {
+                    byte[] pb = new byte[size]; ReadFully(s, pb, (int)size); Skip(s, padded - size);
+                    if (type == 'x')
+                    {
+                        string pax = Encoding.UTF8.GetString(pb);
+                        foreach (string line in pax.Split('\n'))
+                        {
+                            int sp = line.IndexOf(' ');
+                            if (sp > 0 && line.Substring(sp + 1).StartsWith("path=")) longName = line.Substring(sp + 6);
+                        }
+                    }
+                    continue;
+                }
+                if (longName != null) { name = longName; longName = null; }
+                string fileName = name.Replace('\\', '/');
+                fileName = fileName.Substring(fileName.LastIndexOf('/') + 1);
+                bool isFile = type == '0' || type == '\0' || type == '7';
+                if (isFile && Wanted(fileName, ext, archNames))
+                {
+                    string dest = Path.Combine(outDir, fileName);
+                    using (FileStream o = File.Create(dest))
+                    {
+                        byte[] buf = new byte[65536]; long left = size;
+                        while (left > 0) { int k = s.Read(buf, 0, (int)Math.Min(buf.Length, left)); if (k <= 0) throw new EndOfStreamException("tar truncado"); o.Write(buf, 0, k); left -= k; }
+                    }
+                    Skip(s, padded - size);
+                }
+                else if (isFile && depth == 0 && IsArchive(fileName) && size > 0)
+                {
+                    // tar anidado (ej. un .tar.gz por plataforma): se recorre sin extraerlo entero
+                    SubStream sub = new SubStream(s, size);
+                    try { TarScan(OpenMaybeGzipNoSeek(sub), outDir, ext, archNames, seen, depth + 1); } catch (Exception ex) { seen.Add("(" + fileName + ": " + ex.Message + ")"); }
+                    sub.SkipRest();
+                    Skip(s, padded - size);
+                }
+                else
+                {
+                    if (isFile && fileName.ToLowerInvariant().StartsWith("vas") && seen.Count < 40) seen.Add(name);
+                    Skip(s, padded);
+                }
+            }
+        }
+
+        private static Stream OpenMaybeGzipNoSeek(SubStream sub)
+        {
+            int b1 = sub.PeekByte(0), b2 = sub.PeekByte(1);
+            if (b1 == 0x1f && b2 == 0x8b) return new GZipStream(sub, CompressionMode.Decompress, true);
+            return sub;
         }
 
         private static void Collect(string dir, string ext, List<string> acc, int depth)

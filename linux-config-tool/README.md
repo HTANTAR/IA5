@@ -36,7 +36,8 @@ Requisitos: Windows 10/11 o Windows Server 2016+ (usa Windows PowerShell 5.1 y .
    - *Verificar grupo* muestra cómo lo ve Linux (`getent group`) y avisa si el GID no coincide con el de AD.
    - Si el GID no coincide porque SSSD genera los IDs solo, el botón *Usar UID/GID de AD* pone `ldap_id_mapping = False`.
    - *Unir con One Identity Safeguard Authentication Services (VAS/QAS)* — si es el estándar de tu empresa:
-     - elegí la carpeta del instalador de Safeguard en tu PC (se recuerda); la app busca `vasclnt` y `vasgp` para la distro y arquitectura del servidor (.deb o .rpm), los copia por SSH e instala, sin necesitar internet;
+     - elegí el instalador de Safeguard en tu PC: el `.tar` tal cual lo bajaste (ej. `SAS-7.0.0.8900.tar`, también `.tar.gz`) o una carpeta (se recuerda). La app saca del `.tar` solo `vasclnt` y `vasgp` para la distro y arquitectura del servidor (.deb o .rpm), los copia por SSH e instala, sin necesitar internet;
+     - si junto al instalador hay un archivo de licencia `.dlv`, lo instala en `/etc/opt/quest/vas/.licenses` (0644) y reinicia `vasd`;
      - `vastool join` a la OU con el nombre de equipo, aplica las políticas de grupo (`vgptool apply`) y escribe `users.deny` desde una plantilla;
      - la plantilla se toma de un servidor que ya funciona (botón *Usar su users.deny como plantilla*) y se guarda solo en tu PC;
      - *Dar acceso* agrega el grupo a `/etc/opt/quest/vas/users.allow` y la regla sudo; el ✕ lo quita.

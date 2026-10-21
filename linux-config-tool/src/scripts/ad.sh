@@ -510,6 +510,13 @@ case "$ACTION" in
       fi
       lct_log "Instalado: $("$VAS" -v 2>/dev/null | head -n1)"
     fi
+    # Licencia (.dlv) subida junto con el instalador: se instala localmente (no toca AD)
+    if [ -n "$SASDIR" ] && ls "$SASDIR"/*.dlv >/dev/null 2>&1; then
+      mkdir -p "$VASDIR/.licenses"
+      for lf in "$SASDIR"/*.dlv; do install -m 0644 -o root -g root "$lf" "$VASDIR/.licenses/$(basename "$lf")"; done
+      lct_log "Licencia instalada en $VASDIR/.licenses ($(cd "$SASDIR" && ls ./*.dlv | sed 's#^\./##' | paste -sd' ' -))"
+      LIC_NEW=1
+    fi
     rm -rf "$SASDIR" 2>/dev/null
     if is_vas; then
       cur=$("$VAS" info domain 2>/dev/null | head -n1)
@@ -538,6 +545,7 @@ case "$ACTION" in
       fi
       rm -f "$jout"
       lct_log "Unido a $("$VAS" info domain 2>/dev/null | head -n1)."
+      LIC_NEW=${LIC_NEW:-0}
       if [ -x /opt/quest/bin/vgptool ]; then
         /opt/quest/bin/vgptool apply >/dev/null 2>&1 && lct_log "Politicas de grupo (vasgp) aplicadas."
       fi
@@ -550,6 +558,9 @@ case "$ACTION" in
         printf '%s\n' "$deny" | sed 's/\r$//' | grep -vE '^[[:space:]]*$' > "$VASDIR/users.deny"; chmod 644 "$VASDIR/users.deny"
         lct_log "users.deny escrito ($(wc -l < "$VASDIR/users.deny") entradas)."
       fi
+    fi
+    if [ "${LIC_NEW:-0}" = 1 ]; then
+      { systemctl restart vasd 2>/dev/null || /etc/init.d/vasd restart 2>/dev/null; } >/dev/null && lct_log "vasd reiniciado para tomar la licencia."
     fi
     if [ ! -s "$VASDIR/users.allow" ]; then
       echo "LCT_NOTE=Todavia no hay grupos en users.allow: se agregan a continuacion."

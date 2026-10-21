@@ -151,11 +151,12 @@
         </div>
         <div id="jVasBox" class="hidden">
           <div class="grid sas-grid">
-            <label>Carpeta del instalador de Safeguard en esta PC (se recuerda)
-              <span class="pw-wrap"><input id="jSasFolder" placeholder="\\servidor\software\Safeguard\6.1  o  C:\Instaladores\SAS"></span></label>
+            <label>Instalador de Safeguard en esta PC: carpeta o archivo .tar (se recuerda)
+              <span class="pw-wrap"><input id="jSasFolder" placeholder="C:\Users\yo\Downloads\SAS-7.0.0.8900.tar  o una carpeta"></span></label>
             <label>Nombre de equipo en AD<input id="jName" placeholder="(hostname del servidor)"></label>
           </div>
           <div class="actions">
+            <button class="small" id="btnSasPickFile">Elegir archivo .tar...</button>
             <button class="small" id="btnSasPick">Elegir carpeta...</button>
             <button class="small" id="btnSasFind">Buscar paquetes</button>
             <span id="jSasFound" class="hint"></span>
