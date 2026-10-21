@@ -296,6 +296,8 @@ join_diagnose() {
   # El orden importa: si no hay DC alcanzable, tambien aparece "Could not authenticate".
   if grep -qiE 'VAS_ERR_DNS|DNS record lookup failed|discover ANY domain controllers|KDC_UNREACH|unable to reach any KDC|Cannot find KDC|Cannot contact any KDC|Could not find (a )?domain controller|No domain controllers|Failed to discover|Couldn.t find realm|realm.*not found' "$f"; then
     echo "el servidor no encuentra o no llega a los controladores de dominio (DNS del servidor que no son los de AD, o firewall: puertos 53, 88, 389, 464). Mira el chequeo de DNS y DC debajo."
+  elif grep -qiE 'Operation timed out|Failed to send Users Flush IPC' "$f"; then
+    echo "vastool se quedo esperando respuesta de los controladores de dominio (timeout). Pasa en dominios muy grandes cuando el servidor usa un DC lejano: revisa que la subred del servidor este asignada a un sitio de AD y reintenta."
   elif grep -qiE 'Clock skew|clock' "$f"; then
     echo "la hora del servidor difiere mas de 5 minutos con el controlador de dominio. Sincroniza NTP."
   elif grep -qiE 'Preauthentication failed|KRB5KDC_ERR_PREAUTH|Invalid credentials|KDC reply did not match|Client .* not found in Kerberos|Client not found|password (has )?expired|wrong password|incorrect password|account.*(locked|disabled)' "$f"; then
@@ -316,6 +318,16 @@ join_diagnose() {
     echo "no se pudo autenticar con el usuario de AD (clave, cuenta bloqueada o sin acceso al dominio)."
   else
     echo "revisa el detalle debajo."
+  fi
+}
+
+# Explica errores de vastool que aparecen despues de crear la cuenta de equipo
+join_post_diag() {
+  local f=$1
+  if grep -qiE 'Operation timed out|Failed to send Users Flush IPC|timed out' "$f"; then
+    echo "Hubo un timeout cargando usuarios y grupos (dominio muy grande o un controlador de dominio lejano). vasd lo termina solo en unos minutos; si persiste, revisa que la subred del servidor este asignada a un sitio de AD."
+  else
+    echo "Revisa el detalle."
   fi
 }
 
@@ -618,11 +630,18 @@ case "$ACTION" in
       jout=$(mktemp)
       "$VAS" "${jargs[@]}" </dev/null >"$jout" 2>&1; rc=$?
       if [ $rc -ne 0 ]; then
-        grep -vE '^[[:space:]]*$' "$jout" | tail -n 8 | sed 's/^/LCT_DETAIL=/'
-        if grep -qiE 'already exists|ya existe|object exists' "$jout"; then why="ya existe una cuenta de equipo $JOIN_NAME en AD. Si es este mismo servidor reinstalado, marca 'Reemplazar cuenta de equipo existente'."
-        else why=$(join_diagnose "$jout"); fi
-        rm -f "$jout"
-        lct_fail "vastool join fallo: $why"
+        cur=$("$VAS" info domain 2>/dev/null | head -n1)
+        if [ -n "$cur" ] && [ "$(echo "$cur" | tr '[:upper:]' '[:lower:]')" = "$(echo "$DOMAIN" | tr '[:upper:]' '[:lower:]')" ]; then
+          # vastool devolvio error en un paso posterior, pero la union quedo hecha
+          echo "LCT_WARN=vastool termino con un aviso (codigo $rc), pero el servidor quedo unido a $cur. $(join_post_diag "$jout")"
+          grep -vE '^[[:space:]]*$' "$jout" | tail -n 30 | sed 's/^/LCT_DETAIL=/'
+        else
+          grep -vE '^[[:space:]]*$' "$jout" | tail -n 30 | sed 's/^/LCT_DETAIL=/'
+          if grep -qiE 'already exists|ya existe|object exists' "$jout"; then why="ya existe una cuenta de equipo $JOIN_NAME en AD. Si esa cuenta es de este servidor (creada de antemano o reinstalado), marca 'Ya existe en AD una cuenta... reemplazarla'."
+          else why=$(join_diagnose "$jout"); fi
+          rm -f "$jout"
+          lct_fail "vastool join fallo: $why"
+        fi
       fi
       rm -f "$jout"
       lct_log "Unido a $("$VAS" info domain 2>/dev/null | head -n1)."
